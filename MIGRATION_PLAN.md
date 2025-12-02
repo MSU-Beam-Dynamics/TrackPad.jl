@@ -32,7 +32,7 @@ Quadrupole(L, k1, tilt) = Quadrupole(promote(L, k1, tilt)...)
 
 **Memory Layout:** Ensure structs are `isbits` types (immutable, no pointers) whenever possible to allow efficient GPU memory coalescing.
 
-### 1.2 Package Extensions (Julia 1.9+)
+### 1.2 Package Extensions (Julia 1.9+, shall we do it?)
 
 We will use Julia's "Weak Dependencies" to keep the core lightweight. Heavy dependencies (CUDA, Enzyme) will only load when imported by the user.
 
