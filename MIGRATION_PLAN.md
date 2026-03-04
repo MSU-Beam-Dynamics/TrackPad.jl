@@ -2,7 +2,7 @@
 
 **Objective:** Migrate the legacy package `JuTrack.jl` to a new, high-performance architecture `TrackPad.jl`.
 **Goals:** Enhanced usability, multiple AD support (Enzyme, TPSA), GPU integration, and Machine Learning readiness.
-**Role of Legacy:** `JuTrack.jl` will be retained as the stable testbed and "ground truth" for validation.
+**Role of Legacy:** `JuTrack.jl` will be retained as the stable testbed and "ground truth" for validation.  The src of JuTrack.jl will be found in ../JuTrack.jl/
 
 ## Phase 1: Architectural Design & Foundation
 
@@ -96,6 +96,14 @@ end
 
 *   Consider adopt AcceleratorLattice.jl?
 
+### Lattice optics calculation.
+
+* Migrate the lattice calculation functions from JuTrack
+* Add 6-D optics by calculating the crab dispersion.
+
+### Adding capability of particle generation
+* Add a function of generating particle matching a given optics function.
+
 ## Phase 3: Advanced Feature Integration
 
 ### 3.1 Automatic Differentiation (AD) & TPSA
@@ -115,7 +123,9 @@ Implement a high-level API: `track(lattice, beam, method)`.
 **TPSA (High-Order Maps):**
 
 *   Homemade TPSA
-*   Because our elements are `Quadrupole{T}`, passing a `TaylorN{Float64}` struct as the coordinate `x` will automatically generate the Taylor map via Julia's multiple dispatch. No extra C++ bridges are required.
+*   Current Julia version of TPSA has bad memory allocation, need to be improved
+*   Try to match the speed of gtpsa.jl
+*   To adopt TPSA to GPU, may need to change the memory layout. 
 
 ### 3.2 GPU Integration
 
