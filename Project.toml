@@ -13,10 +13,12 @@ StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 [weakdeps]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
+PolySeries = "6f3fcde8-8165-4326-91a7-f7698485e8a3"
 
 [extensions]
 TrackPadCUDAExt = "CUDA"
 TrackPadEnzymeExt = "Enzyme"
+TrackPadPolySeriesExt = "PolySeries"
 
 [compat]
 Adapt = "4"
