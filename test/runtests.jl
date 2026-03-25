@@ -10,5 +10,6 @@ using Test
         include("verify_time_dependence.jl")
         include("verify_enzyme_compat.jl")
         include("verify_elements.jl")
+        include("verify_polyseries.jl")
     end
 end
