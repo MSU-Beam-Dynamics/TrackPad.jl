@@ -33,6 +33,9 @@ include("lattice.jl")
 # Linear optics utilities
 include("optics.jl")
 
+# TPSA map API (implementation in ext/TrackPadPolySeriesExt.jl)
+include("tpsa.jl")
+
 # Re-export key symbols
 export AbstractElement, AbstractMagnet, AbstractDrift, AbstractCavity
 export AbstractTransferMap, AbstractTransverseMap, AbstractLongitudinalRFMap
@@ -59,6 +62,7 @@ export twissPropagate, periodicEdwardsTengTwiss, twissring
 export gettune, getchrom, twissline
 export find_closed_orbit_4d, find_closed_orbit_6d
 export check_lost, drift6, strthinkick, symplectic4_pass
+export tpsa_map
 
 # Physical constants
 export M_ELECTRON, M_PROTON

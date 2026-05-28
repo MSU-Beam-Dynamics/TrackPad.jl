@@ -1,0 +1,11 @@
+[deps]
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+TrackPad = "e7bec244-bd43-46ed-8fec-7dc091d24617"
+
+[compat]
+Documenter = "1"
+julia = "1.10"
+
+# To set up this docs environment for the first time, run:
+#   julia --project=docs/ -e 'using Pkg; Pkg.develop(PackageSpec(path="."))'

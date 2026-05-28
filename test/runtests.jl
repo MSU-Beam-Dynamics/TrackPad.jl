@@ -11,4 +11,7 @@ using Test
         include("verify_enzyme_compat.jl")
         include("verify_elements.jl")
     end
+    @testset "TPSA" begin
+        include("verify_tpsa.jl")
+    end
 end

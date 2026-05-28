@@ -7,7 +7,7 @@ const PARITY_ATOL = 1e-15
 const ENERGY_VAL = 3.5e9
 
 # Deterministic initial coordinates shared across element parity checks.
-const particles_initial = [
+particles_initial = [
     1.0e-4   2.0e-4   3.0e-4  -1.0e-4   5.0e-5   2.0e-4
    -2.2e-4  1.7e-4  -1.1e-4   2.3e-4  -7.0e-5   1.0e-4
     3.5e-4  -2.1e-4  8.0e-5  -1.8e-4   1.4e-4  -2.6e-4

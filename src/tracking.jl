@@ -41,29 +41,56 @@ USE_EXACT_HAMILTONIAN::Bool = true
 # Helper Functions (allocation-free)
 # =============================================================================
 
+# ---------------------------------------------------------------------------
+# TPSA compatibility guards
+#
+# These allow CTPS{Float64} (or any non-Real) coordinates to flow through the
+# tracking kernels unchanged for the few operations that require ordered-field
+# semantics (comparisons, NaN checks, clamp).  For Real coordinates the
+# original behaviour is preserved exactly.
+# ---------------------------------------------------------------------------
+
+"""Return true when pz² ≤ 0 (particle lost); always false for TPSA types."""
+@inline _check_pz2(pz2::Real) = pz2 <= zero(pz2)
+@inline _check_pz2(_) = false
+
+"""Return NaN coords for real types; unreachable for TPSA types."""
+@inline _nan_coords(::Type{T}) where T<:Real = SVector{6,T}(T(NaN),T(NaN),T(NaN),T(NaN),T(NaN),T(NaN))
+
+"""Guard for clamp in exact-bend helpers (comparisons undefined on CTPS)."""
+@inline _safe_clamp(val::Real, lo::Real, hi::Real) = clamp(val, lo, hi)
+@inline _safe_clamp(val, lo, hi) = val
+
+"""Guard for pxyz sqrt domain check (only meaningful for Real coords)."""
+@inline _safe_sqrt_pz(val::Real) = val > zero(val) ? sqrt(val) : zero(val)
+@inline _safe_sqrt_pz(val) = sqrt(val)
+
 """
     check_lost(r::AbstractVector) -> Bool
 
 Check if particle is lost (coordinates exceed limits or are NaN).
+For TPSA / AD coordinate types returns false unconditionally.
 """
-@inline function check_lost(r::AbstractVector{T}) where T
+@inline function check_lost(r::AbstractVector{T}) where T<:Real
     return isnan(r[1]) || abs(r[1]) > COORD_LIMIT || abs(r[3]) > COORD_LIMIT ||
            abs(r[2]) > ANGLE_LIMIT || abs(r[4]) > ANGLE_LIMIT
 end
+@inline check_lost(r::AbstractVector) = false   # CTPS, Dual, etc.
 
 """
-    apply_misalignment!(r, t, R)
+    apply_misalignment(r, t[, R])
 
-Apply misalignment: translation t and rotation R to coordinates r (in-place for mutable).
-Returns new coordinates for immutable StaticArrays.
+Apply misalignment: translation `t` (element type) and optional rotation `R`
+to coordinates `r`.  Supports mixed types: element params T, coordinates S.
 """
-@inline function apply_misalignment(r::SVector{6,T}, t::SVector{6,T}, R::SMatrix{6,6,T,36}) where T
-    r_new = r + t
+@inline function apply_misalignment(r::SVector{6,S}, t::SVector{6,T},
+                                     R::SMatrix{6,6,T,36}) where {T,S}
+    r_new = SVector(r[1]+t[1], r[2]+t[2], r[3]+t[3], r[4]+t[4], r[5]+t[5], r[6]+t[6])
     return R * r_new
 end
 
-@inline function apply_misalignment(r::SVector{6,T}, t::SVector{6,T}) where T
-    return r + t
+@inline function apply_misalignment(r::SVector{6,S}, t::SVector{6,T}) where {T,S}
+    return SVector(r[1]+t[1], r[2]+t[2], r[3]+t[3], r[4]+t[4], r[5]+t[5], r[6]+t[6])
 end
 
 # =============================================================================
@@ -84,26 +111,25 @@ Uses exact Hamiltonian when USE_EXACT_HAMILTONIAN is true.
 # Returns
 - Updated coordinates as SVector{6,T}
 """
-@inline function drift6(r::SVector{6,T}, L::T, beti::T=one(T)) where T
+@inline function drift6(r::SVector{6,S}, L::T, beti::T=one(T)) where {T<:Real,S}
     if USE_EXACT_HAMILTONIAN
         # Exact Hamiltonian: pz = sqrt(1 + 2δ/β + δ² - px² - py²)
         pz2 = one(T) + 2*r[6]*beti + r[6]^2 - r[2]^2 - r[4]^2
-        if pz2 <= zero(T)
-            # Particle is lost
-            return SVector{6,T}(T(NaN), T(NaN), T(NaN), T(NaN), T(NaN), T(NaN))
+        if _check_pz2(pz2)
+            return _nan_coords(T)
         end
         NormL = L / sqrt(pz2)
         x_new = r[1] + NormL * r[2]
         y_new = r[3] + NormL * r[4]
         z_new = r[5] + NormL * (beti + r[6]) - L * beti
-        return SVector{6,T}(x_new, r[2], y_new, r[4], z_new, r[6])
+        return SVector(x_new, r[2], y_new, r[4], z_new, r[6])
     else
         # Linearized approximation: pz ≈ 1 + δ
         NormL = L / (one(T) + r[6])
         x_new = r[1] + NormL * r[2]
         y_new = r[3] + NormL * r[4]
         z_new = r[5] + NormL * (r[2]^2 + r[4]^2) / (2*(one(T) + r[6]))
-        return SVector{6,T}(x_new, r[2], y_new, r[4], z_new, r[6])
+        return SVector(x_new, r[2], y_new, r[4], z_new, r[6])
     end
 end
 
@@ -112,7 +138,7 @@ end
 
 Track particle through a Drift element.
 """
-function pass!(elem::Drift{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::Drift{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     # Apply entrance misalignment
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
@@ -136,7 +162,7 @@ end
 
 Track particle through a Marker (no effect).
 """
-function pass!(elem::Marker, r::SVector{6,T}, beti::T=one(T)) where T
+function pass!(elem::Marker, r::SVector{6,S}, beti::S=one(S)) where S
     return r
 end
 
@@ -157,8 +183,8 @@ Apply dipole edge focusing at entrance.
 - `gap`: Magnet gap
 - `method`: Fringe calculation method (0=none, 1=Brown, 2=SOLEIL, 3=THOMX)
 """
-@inline function edge_fringe_entrance(r::SVector{6,T}, inv_rho::T, edge_angle::T, 
-                                       fint::T, gap::T, method::Int) where T
+@inline function edge_fringe_entrance(r::SVector{6,S}, inv_rho::T, edge_angle::T,
+                                       fint::T, gap::T, method::Int) where {T<:Real,S}
     if iszero(fint) || iszero(gap) || method == 0
         fringecorr = zero(T)
     else
@@ -182,7 +208,7 @@ Apply dipole edge focusing at entrance.
     px_new = r[2] + r[1] * fx
     py_new = r[4] - r[3] * fy
     
-    return SVector{6,T}(r[1], px_new, r[3], py_new, r[5], r[6])
+    return SVector(r[1], px_new, r[3], py_new, r[5], r[6])
 end
 
 """
@@ -191,8 +217,8 @@ end
 Apply dipole edge focusing at exit.
 Same as entrance but with opposite sign for THOMX method px term.
 """
-@inline function edge_fringe_exit(r::SVector{6,T}, inv_rho::T, edge_angle::T, 
-                                   fint::T, gap::T, method::Int) where T
+@inline function edge_fringe_exit(r::SVector{6,S}, inv_rho::T, edge_angle::T,
+                                   fint::T, gap::T, method::Int) where {T<:Real,S}
     if iszero(fint) || iszero(gap) || method == 0
         fringecorr = zero(T)
     else
@@ -217,7 +243,7 @@ Same as entrance but with opposite sign for THOMX method px term.
     px_new = r[2] + r[1] * fx
     py_new = r[4] - r[3] * fy
     
-    return SVector{6,T}(r[1], px_new, r[3], py_new, r[5], r[6])
+    return SVector(r[1], px_new, r[3], py_new, r[5], r[6])
 end
 
 # =============================================================================
@@ -240,13 +266,13 @@ focusing effect from the curved trajectory.
 - `max_order`: Maximum multipole order to apply
 - `beti`: 1/β (inverse relativistic velocity)
 """
-@inline function bndthinkick(r::SVector{6,T}, 
-                             polynom_a::SVector{N,T}, 
-                             polynom_b::SVector{N,T}, 
-                             L::T, 
+@inline function bndthinkick(r::SVector{6,S},
+                             polynom_a::SVector{N,T},
+                             polynom_b::SVector{N,T},
+                             L::T,
                              irho::T,
                              max_order::Int,
-                             beti::T) where {T,N}
+                             beti::T) where {T<:Real,N,S}
     # Start from highest order
     ReSum = polynom_b[max_order + 1]
     ImSum = polynom_a[max_order + 1]
@@ -266,7 +292,7 @@ focusing effect from the curved trajectory.
     py_new = r[4] + L * ImSum
     z_new = r[5] + L * irho * r[1] * beti
     
-    return SVector{6,T}(r[1], px_new, r[3], py_new, z_new, r[6])
+    return SVector(r[1], px_new, r[3], py_new, z_new, r[6])
 end
 
 """
@@ -281,11 +307,11 @@ Apply thin multipole kick to particle.
 - `L`: Effective kick length
 - `max_order`: Maximum multipole order to apply
 """
-@inline function strthinkick(r::SVector{6,T}, 
-                             polynom_a::SVector{N,T}, 
-                             polynom_b::SVector{N,T}, 
-                             L::T, 
-                             max_order::Int) where {T,N}
+@inline function strthinkick(r::SVector{6,S},
+                             polynom_a::SVector{N,T},
+                             polynom_b::SVector{N,T},
+                             L::T,
+                             max_order::Int) where {T<:Real,N,S}
     # Start from highest order
     ReSum = polynom_b[max_order + 1]
     ImSum = polynom_a[max_order + 1]
@@ -301,7 +327,7 @@ Apply thin multipole kick to particle.
     px_new = r[2] - L * ReSum
     py_new = r[4] + L * ImSum
     
-    return SVector{6,T}(r[1], px_new, r[3], py_new, r[5], r[6])
+    return SVector(r[1], px_new, r[3], py_new, r[5], r[6])
 end
 
 # =============================================================================
@@ -314,13 +340,13 @@ end
 4th-order Yoshida symplectic integrator for thick multipole elements.
 Drift-Kick-Drift-Kick-Drift-Kick-Drift pattern per step.
 """
-@inline function symplectic4_pass(r::SVector{6,T},
+@inline function symplectic4_pass(r::SVector{6,S},
                                    L::T,
                                    polynom_a::SVector{N,T},
                                    polynom_b::SVector{N,T},
                                    max_order::Int,
                                    num_steps::Int,
-                                   beti::T) where {T,N}
+                                   beti::T) where {T<:Real,N,S}
     SL = L / num_steps
     L1 = SL * T(DRIFT1)
     L2 = SL * T(DRIFT2)
@@ -347,14 +373,14 @@ end
 Uses bndthinkick instead of strthinkick to include curvature effects.
 Drift-Kick-Drift-Kick-Drift-Kick-Drift pattern per step.
 """
-@inline function symplectic4_bend_pass(r::SVector{6,T},
+@inline function symplectic4_bend_pass(r::SVector{6,S},
                                         L::T,
                                         polynom_a::SVector{N,T},
                                         polynom_b::SVector{N,T},
                                         irho::T,
                                         max_order::Int,
                                         num_steps::Int,
-                                        beti::T) where {T,N}
+                                        beti::T) where {T<:Real,N,S}
     SL = L / num_steps
     L1 = SL * T(DRIFT1)
     L2 = SL * T(DRIFT2)
@@ -383,7 +409,7 @@ end
 
 Track particle through a Quadrupole using 4th-order symplectic integrator.
 """
-function pass!(elem::Quadrupole{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::Quadrupole{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     # Apply entrance misalignment
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
@@ -435,7 +461,7 @@ end
 
 Track particle through a Sextupole using 4th-order symplectic integrator.
 """
-function pass!(elem::Sextupole{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::Sextupole{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     # Apply entrance misalignment
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
@@ -467,7 +493,7 @@ end
 
 Track particle through an Octupole using 4th-order symplectic integrator.
 """
-function pass!(elem::Octupole{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::Octupole{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     # Apply entrance misalignment
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
@@ -499,7 +525,7 @@ end
 
 Track particle through an RF Cavity using drift-kick-drift.
 """
-function pass!(elem::RFCavity{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::RFCavity{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     # Match JuTrack RFCA map (with nturn=0 in single-pass context).
     beta = inv(beti)
     if elem.L > zero(T)
@@ -509,7 +535,7 @@ function pass!(elem::RFCavity{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
         nv = elem.volt / elem.energy
         phase = T(2pi) * elem.freq * ((r[5] - elem.lag) / T(C_LIGHT)) - elem.philag
         delta_new = r[6] - nv * sin(phase) / (beta * beta)
-        r = SVector{6,T}(r[1], r[2], r[3], r[4], r[5], delta_new)
+        r = SVector(r[1], r[2], r[3], r[4], r[5], delta_new)
     end
     if elem.L > zero(T)
         r = drift6(r, elem.L / 2, beti)
@@ -526,7 +552,7 @@ end
 
 Track particle through a Solenoid using exact matrix transformation.
 """
-function pass!(elem::Solenoid{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::Solenoid{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     # Apply entrance misalignment
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
@@ -546,16 +572,16 @@ function pass!(elem::Solenoid{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
         y = r[3]
         ypr = r[4] * p_norm
         H = ks * p_norm / 2
-        S = sin(L * H)
-        C = cos(L * H)
+        Sn = sin(L * H)
+        Cn = cos(L * H)
 
-        x_new = x * C * C + xpr * C * S / H + y * C * S + ypr * S * S / H
-        px_new = (-x * H * C * S + xpr * C * C - y * H * S * S + ypr * C * S) / p_norm
-        y_new = -x * C * S - xpr * S * S / H + y * C * C + ypr * C * S / H
-        py_new = (x * H * S * S - xpr * C * S - y * C * S * H + ypr * C * C) / p_norm
+        x_new = x * Cn * Cn + xpr * Cn * Sn / H + y * Cn * Sn + ypr * Sn * Sn / H
+        px_new = (-x * H * Cn * Sn + xpr * Cn * Cn - y * H * Sn * Sn + ypr * Cn * Sn) / p_norm
+        y_new = -x * Cn * Sn - xpr * Sn * Sn / H + y * Cn * Cn + ypr * Cn * Sn / H
+        py_new = (x * H * Sn * Sn - xpr * Cn * Sn - y * Cn * Sn * H + ypr * Cn * Cn) / p_norm
         z_new = r[5] + L * (H * H * (x * x + y * y) + 2 * H * (xpr * y - ypr * x) + xpr * xpr + ypr * ypr) / 2
 
-        r = SVector{6,T}(x_new, px_new, y_new, py_new, z_new, r[6])
+        r = SVector(x_new, px_new, y_new, py_new, z_new, r[6])
     end
     
     # Apply exit misalignment
@@ -576,7 +602,7 @@ end
 
 Track particle through a Corrector (orbit correction kicks).
 """
-function pass!(elem::Corrector{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::Corrector{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     # Apply entrance misalignment
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
@@ -593,7 +619,7 @@ function pass!(elem::Corrector{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N
     px_new = r[2] + elem.xkick
     y_new = r[3] + NormL * (r[4] + elem.ykick / 2)
     py_new = r[4] + elem.ykick
-    r = SVector{6,T}(x_new, px_new, y_new, py_new, z_new, r[6])
+    r = SVector(x_new, px_new, y_new, py_new, z_new, r[6])
     
     # Apply exit misalignment
     if !iszero(elem.r2)
@@ -613,7 +639,7 @@ end
 
 Track particle through a thin multipole element.
 """
-function pass!(elem::ThinMultipole{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::ThinMultipole{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     # Apply entrance misalignment
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
@@ -654,7 +680,7 @@ The tracking sequence is:
 4. Apply exit edge focusing
 5. Apply exit misalignment (r2, t2)
 """
-function pass!(elem::SBend{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::SBend{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     # Apply entrance misalignment
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
@@ -716,7 +742,11 @@ Helper for exact bend Hamiltonian: pz = sqrt(dp1^2 - px^2 - py^2)
 """
 @inline function pxyz(dp1::T, px::T, py::T) where T
     val = dp1^2 - px^2 - py^2
-    return val > zero(T) ? sqrt(val) : zero(T)
+    return _safe_sqrt_pz(val)
+end
+# CTPS / non-Real overload (no comparison needed)
+@inline function pxyz(dp1, px, py)
+    return sqrt(dp1^2 - px^2 - py^2)
 end
 
 """
@@ -724,7 +754,7 @@ end
 
 Rotation in free space (Forest 10.26).
 """
-@inline function yrot(r::SVector{6,T}, phi::T, beti::T) where T
+@inline function yrot(r::SVector{6,S}, phi::T, beti::T) where {T<:Real,S}
     if phi == zero(T)
         return r
     end
@@ -741,7 +771,7 @@ Rotation in free space (Forest 10.26).
     y_new = r[3] + r[1] * r[4] * s / p
     z_new = r[5] + dp1 * r[1] * s / p
     
-    return SVector{6,T}(x_new, px_new, y_new, r[4], z_new, r[6])
+    return SVector(x_new, px_new, y_new, r[4], z_new, r[6])
 end
 
 """
@@ -749,7 +779,7 @@ end
 
 Hard-edge bend fringe (Forest 13.13).
 """
-@inline function bend_fringe(r::SVector{6,T}, irho::T, gK::T, beti::T) where T
+@inline function bend_fringe(r::SVector{6,S}, irho::T, gK::T, beti::T) where {T<:Real,S}
     b0 = irho
     dp1 = beti + r[6]
     pz = pxyz(dp1, r[2], r[4])
@@ -811,7 +841,7 @@ Hard-edge bend fringe (Forest 13.13).
     dct = 0.5 * dd * yf^2
     dpyf = phi * yf
     
-    return SVector{6,T}(r[1] + dxf, r[2], yf, r[4] - dpyf, r[5] - dct, r[6])
+    return SVector(r[1] + dxf, r[2], yf, r[4] - dpyf, r[5] - dct, r[6])
 end
 
 """
@@ -819,7 +849,7 @@ end
 
 Ideal wedge map (Forest 12.41).
 """
-@inline function bend_edge(r::SVector{6,T}, rhoinv::T, theta::T, beti::T) where T
+@inline function bend_edge(r::SVector{6,S}, rhoinv::T, theta::T, beti::T) where {T<:Real,S}
     if abs(rhoinv) < 1e-6
         return r
     end
@@ -836,8 +866,8 @@ Ideal wedge map (Forest 12.41).
     val1 = r[2] / d2
     val2 = px_new / d2
     # clamp to [-1, 1] to avoid domain error
-    val1 = clamp(val1, -one(T), one(T))
-    val2 = clamp(val2, -one(T), one(T))
+    val1 = _safe_clamp(val1, -one(T), one(T))
+    val2 = _safe_clamp(val2, -one(T), one(T))
     dasin = asin(val1) - asin(val2)
     
     num = r[1] * (r[2] * sin(2*theta) + s^2 * (2*pz - rhoinv * r[1]))
@@ -847,7 +877,7 @@ Ideal wedge map (Forest 12.41).
     y_new = r[3] + r[4] * (theta / rhoinv + dasin / rhoinv)
     z_new = r[5] + dp1 / rhoinv * (theta + dasin)
     
-    return SVector{6,T}(x_new, px_new, y_new, r[4], z_new, r[6])
+    return SVector(x_new, px_new, y_new, r[4], z_new, r[6])
 end
 
 """
@@ -855,19 +885,19 @@ end
 
 Exact bend body map (Forest 12.18).
 """
-@inline function exact_bend_body(r::SVector{6,T}, irho::T, L::T, beti::T) where T
+@inline function exact_bend_body(r::SVector{6,S}, irho::T, L::T, beti::T) where {T<:Real,S}
     dp1 = beti + r[6]
     pz = pxyz(dp1, r[2], r[4])
     
     if abs(irho) < 1e-6
         # Drift limit
         NormL = L / pz
-        return SVector{6,T}(
+        return SVector(
             r[1] + r[2] * NormL,
             r[2],
             r[3] + r[4] * NormL,
             r[4],
-            r[5] + NormL * dp1 - L * beti, # Path length diff
+            r[5] + NormL * dp1 - L * beti,
             r[6]
         )
     else
@@ -880,8 +910,8 @@ Exact bend body map (Forest 12.18).
         d2 = pxyz(dp1, 0.0, r[4])
         val1 = r[2] / d2
         val2 = px_new / d2
-        val1 = clamp(val1, -one(T), one(T))
-        val2 = clamp(val2, -one(T), one(T))
+        val1 = _safe_clamp(val1, -one(T), one(T))
+        val2 = _safe_clamp(val2, -one(T), one(T))
         
         dasin = L + (asin(val1) - asin(val2)) / irho
         
@@ -889,7 +919,7 @@ Exact bend body map (Forest 12.18).
         y_new = r[3] + r[4] * dasin
         z_new = r[5] + dp1 * dasin - L * beti
         
-        return SVector{6,T}(x_new, px_new, y_new, r[4], z_new, r[6])
+        return SVector(x_new, px_new, y_new, r[4], z_new, r[6])
     end
 end
 
@@ -898,7 +928,7 @@ end
 
 Track through Exact Sector Bend.
 """
-function pass!(elem::ExactSBend{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::ExactSBend{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     # Entrance Misalignment
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
@@ -978,7 +1008,7 @@ end
 
 @inline _nan6(::Type{T}) where T = SVector{6, T}(ntuple(_ -> T(NaN), 6))
 
-function pass!(elem::DriftSC{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::DriftSC{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
         r = elem.r1 * r
@@ -994,7 +1024,7 @@ end
     return SVector{4, T}(elem.k0, elem.k1, elem.k2 / 2, elem.k3 / 6)
 end
 
-function pass!(elem::QuadrupoleSC{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::QuadrupoleSC{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
         r = elem.r1 * r
@@ -1014,7 +1044,7 @@ function pass!(elem::QuadrupoleSC{T,N}, r::SVector{6,T}, beti::T=one(T)) where {
     return apply_misalignment(r, elem.t2)
 end
 
-function pass!(elem::SextupoleSC{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::SextupoleSC{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
         r = elem.r1 * r
@@ -1026,7 +1056,7 @@ function pass!(elem::SextupoleSC{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T
     return apply_misalignment(r, elem.t2)
 end
 
-function pass!(elem::OctupoleSC{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::OctupoleSC{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
         r = elem.r1 * r
@@ -1038,7 +1068,7 @@ function pass!(elem::OctupoleSC{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,
     return apply_misalignment(r, elem.t2)
 end
 
-function pass!(elem::SBendSC{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::SBendSC{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
         r = elem.r1 * r
@@ -1149,7 +1179,7 @@ end
     return SVector{6, T}(x_new, px_new, y_new, py_new, z_new, r[6])
 end
 
-function pass!(elem::LBend{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::LBend{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
         r = elem.r1 * r
@@ -1173,13 +1203,13 @@ end
 # Auxiliary Canonical Elements
 # =============================================================================
 
-function pass!(elem::SpaceCharge{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::SpaceCharge{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     # TrackPad's single-particle API has no bunch moments/current.
     # Keep SPACECHARGE as a no-op here (JuTrack also gives zero kick at I=0).
     return r
 end
 
-function pass!(elem::Translation{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::Translation{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     pz2 = one(T) + 2 * r[6] * beti + r[6]^2 - r[2]^2 - r[4]^2
     if pz2 <= zero(T)
         return _nan6(T)
@@ -1191,7 +1221,7 @@ function pass!(elem::Translation{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T
     return SVector{6, T}(x_new, r[2], y_new, r[4], z_new, r[6])
 end
 
-function pass!(elem::YRotation{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::YRotation{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     angle = -elem.angle
     if iszero(angle)
         return r
@@ -1506,7 +1536,7 @@ end
     return r
 end
 
-function pass!(elem::Wiggler{T,N,V}, r::SVector{6,T}, beti::T=one(T)) where {T,N,V}
+function pass!(elem::Wiggler{T,N,V}, r::SVector{6,S}, beti::T=one(T)) where {T,N,V,S}
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
         r = elem.r1 * r
@@ -1528,7 +1558,7 @@ end
 # Crab / Accelerating Cavities
 # =============================================================================
 
-function pass!(elem::CrabCavity{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::CrabCavity{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     volt = elem.volt * (one(T) + elem.errors[1])
     phi = elem.phi + elem.errors[2]
     E = max(abs(elem.energy), eps(T))
@@ -1546,7 +1576,7 @@ function pass!(elem::CrabCavity{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,
     return r
 end
 
-function pass!(elem::AccelCavity{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::AccelCavity{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     beta = inv(beti)
     beta2 = beta * beta
     if beta2 <= eps(T)
@@ -1584,7 +1614,7 @@ function pass!(elem::LongitudinalRFMap{T,E}, r::SVector{6,T}, beti::T=one(T)) wh
     return SVector{6, T}(r[1], r[2], r[3], r[4], z_new, r[6])
 end
 
-function pass!(elem::LorentzBoost{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::LorentzBoost{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     if elem.mode != 0
         return r
     end
@@ -1594,7 +1624,7 @@ function pass!(elem::LorentzBoost{T,N}, r::SVector{6,T}, beti::T=one(T)) where {
     return SVector{6, T}(x_new, r[2] * invcos, r[3], r[4] * invcos, r[5] * invcos, delta_new)
 end
 
-function pass!(elem::InvLorentzBoost{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::InvLorentzBoost{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     if elem.mode != 0
         return r
     end
@@ -1607,7 +1637,7 @@ end
 # Strong Beam-Beam (single-particle approximations)
 # =============================================================================
 
-function pass!(elem::StrongThinGaussianBeam{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::StrongThinGaussianBeam{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     sx2 = max(elem.rmssizex^2, eps(T))
     sy2 = max(elem.rmssizey^2, eps(T))
     dx = r[1] - elem.xoffset
@@ -1618,7 +1648,7 @@ function pass!(elem::StrongThinGaussianBeam{T,N}, r::SVector{6,T}, beti::T=one(T
     return SVector{6, T}(r[1], px_new, r[3], py_new, r[5], r[6])
 end
 
-function pass!(elem::StrongGaussianBeam{T,N,V}, r::SVector{6,T}, beti::T=one(T)) where {T,N,V}
+function pass!(elem::StrongGaussianBeam{T,N,V}, r::SVector{6,S}, beti::T=one(T)) where {T,N,V,S}
     if elem.nzslice <= 0
         return r
     end
@@ -1644,7 +1674,7 @@ end
 # Longitudinal Wake models
 # =============================================================================
 
-function pass!(elem::LongitudinalRLCWake{T,N}, r::SVector{6,T}, beti::T=one(T)) where {T,N}
+function pass!(elem::LongitudinalRLCWake{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     if iszero(elem.scale)
         return r
     end
@@ -1653,7 +1683,7 @@ function pass!(elem::LongitudinalRLCWake{T,N}, r::SVector{6,T}, beti::T=one(T)) 
     return SVector{6, T}(r[1], r[2], r[3], r[4], r[5], delta_new)
 end
 
-function pass!(elem::LongitudinalWake{T,N,V}, r::SVector{6,T}, beti::T=one(T)) where {T,N,V}
+function pass!(elem::LongitudinalWake{T,N,V}, r::SVector{6,S}, beti::T=one(T)) where {T,N,V,S}
     if iszero(elem.scale)
         return r
     end

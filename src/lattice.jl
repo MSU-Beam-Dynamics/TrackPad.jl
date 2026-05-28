@@ -185,8 +185,8 @@ Track a single particle through the lattice (immutable version).
 # Returns
 - Final 6D coordinates after tracking
 """
-function linepass(lat::Lattice, r::SVector{6,T}, beam::Beam{T};
-                  time::Real=zero(T), turn::Integer=0) where T
+function linepass(lat::Lattice, r::SVector{6,S}, beam::Beam{T};
+                  time::Real=zero(T), turn::Integer=0) where {T,S}
     β_inv = beti(beam)
     ctx = TimeContext(T(time); turn=turn)
     for elem in lat.elements
@@ -204,8 +204,8 @@ end
 
 Track a single particle through the lattice using default beam (1 GeV electron).
 """
-function linepass(lat::Lattice, r::SVector{6,T}; time::Real=zero(T), turn::Integer=0) where T
-    beam = Beam(T(1.0e9))
+function linepass(lat::Lattice, r::SVector{6,S}; time::Real=zero(Float64), turn::Integer=0) where S
+    beam = Beam(1.0e9)
     return linepass(lat, r, beam; time=time, turn=turn)
 end
 
@@ -223,8 +223,8 @@ Track a single particle for multiple turns through a ring lattice.
 # Returns
 - Final coordinates after all turns
 """
-function ringpass(lat::Lattice, r::SVector{6,T}, beam::Beam{T}, nturns::Int;
-                  time::Real=zero(T), dt_turn::Real=zero(T), turn::Integer=0) where T
+function ringpass(lat::Lattice, r::SVector{6,S}, beam::Beam{T}, nturns::Int;
+                  time::Real=zero(T), dt_turn::Real=zero(T), turn::Integer=0) where {T,S}
     t = T(time)
     dt = T(dt_turn)
     trn = Int(turn)
