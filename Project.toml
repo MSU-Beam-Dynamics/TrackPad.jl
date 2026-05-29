@@ -10,6 +10,7 @@ KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 PolySeries = "6f3fcde8-8165-4326-91a7-f7698485e8a3"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+YAML = "ddb6d928-2868-570f-bddf-ab3f9cf99eb6"
 
 [weakdeps]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
@@ -27,6 +28,7 @@ Enzyme = "0.13"
 KernelAbstractions = "0.9"
 PolySeries = "0.1"
 StaticArrays = "1.9"
+YAML = "0.4"
 julia = "1.10"
 
 [extras]

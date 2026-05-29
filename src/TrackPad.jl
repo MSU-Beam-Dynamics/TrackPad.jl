@@ -36,6 +36,9 @@ include("optics.jl")
 # TPSA map API (implementation in ext/TrackPadPolySeriesExt.jl)
 include("tpsa.jl")
 
+# Lattice I/O: PALS YAML and MAD-X readers/writers
+include("io.jl")
+
 # Re-export key symbols
 export AbstractElement, AbstractMagnet, AbstractDrift, AbstractCavity
 export AbstractTransferMap, AbstractTransverseMap, AbstractLongitudinalRFMap

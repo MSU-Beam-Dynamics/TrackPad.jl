@@ -18,6 +18,7 @@ makedocs(
         "User Guide"  => [
             "Getting Started" => "guide.md",
             "Elements"        => "elements.md",
+            "File I/O"        => "io.md",
         ],
         "API Reference" => "api.md",
     ],
