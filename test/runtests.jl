@@ -21,5 +21,6 @@ end
     end
     @testset "TPSA" begin
         include_isolated(:VerifyTPSA, "verify_tpsa.jl")
+        include_isolated(:VerifyPolySeries, "verify_polyseries.jl")
     end
 end

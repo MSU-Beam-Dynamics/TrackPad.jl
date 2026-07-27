@@ -79,4 +79,9 @@ export cpu_batch_linepass!
 # Physical constants
 export M_ELECTRON, M_PROTON
 
+# Stubs for TPSA extension (TrackPadPolySeriesExt)
+function polyseries_variables end
+function polyseries_one_turn_map end
+export polyseries_variables, polyseries_one_turn_map
+
 end # module TrackPad

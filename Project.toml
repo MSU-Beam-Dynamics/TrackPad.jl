@@ -41,8 +41,9 @@ julia = "1.10"
 Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
 JuTrack = "a43d9089-7dde-42d4-b2b6-ab2f8db67ed6"
 PolySeries = "6f3fcde8-8165-4326-91a7-f7698485e8a3"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Test", "Serialization", "Enzyme", "JuTrack", "PolySeries"]
+test = ["Test", "Random", "Serialization", "Enzyme", "JuTrack", "PolySeries"]
