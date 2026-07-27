@@ -121,7 +121,9 @@ Uses exact Hamiltonian when USE_EXACT_HAMILTONIAN is true.
         NormL = L / sqrt(pz2)
         x_new = r[1] + NormL * r[2]
         y_new = r[3] + NormL * r[4]
-        z_new = r[5] + NormL * (beti + r[6]) - L * beti
+        # Match JuTrack's in-place `+=` evaluation order. This avoids changing
+        # finite-difference maps through cancellation at substep boundaries.
+        z_new = r[5] + (NormL * (beti + r[6]) - L * beti)
         return SVector(x_new, r[2], y_new, r[4], z_new, r[6])
     else
         # Linearized approximation: pz ≈ 1 + δ

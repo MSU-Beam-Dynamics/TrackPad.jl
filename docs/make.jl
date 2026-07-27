@@ -1,3 +1,10 @@
+# Restrict load path to only the docs project + stdlib.
+# This prevents optional extensions (e.g. TrackPadPolySeriesExt) from
+# being triggered by packages installed in the user's global environment.
+empty!(Base.LOAD_PATH)
+push!(Base.LOAD_PATH, "@")
+push!(Base.LOAD_PATH, "@stdlib")
+
 using Documenter
 using TrackPad
 using StaticArrays
@@ -19,6 +26,7 @@ makedocs(
             "Getting Started" => "guide.md",
             "Elements"        => "elements.md",
             "File I/O"        => "io.md",
+            "GPU Acceleration" => "gpu.md",
         ],
         "API Reference" => "api.md",
     ],

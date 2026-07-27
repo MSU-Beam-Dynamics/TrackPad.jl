@@ -3,6 +3,18 @@ using TrackPad
 import JuTrack
 using LinearAlgebra
 
+function with_jutrack_exact_beti(f::Function)
+    old_exact_beti = JuTrack.use_exact_beti
+    JuTrack.use_exact_beti = 1
+    try
+        return f()
+    finally
+        JuTrack.use_exact_beti = old_exact_beti
+    end
+end
+
+with_jutrack_exact_beti() do
+
 # Simple periodic cell to validate optics APIs
 D = Drift(1.0; name="D")
 QF = Quadrupole(0.5, 0.6; name="QF", num_int_steps=8)
@@ -26,14 +38,14 @@ chrom_jt = JuTrack.getchrom(ring_jt; energy=3.0e9, mass=JuTrack.m_e)
     @test isfinite(qy)
     @test 0.0 <= qx <= 1.0
     @test 0.0 <= qy <= 1.0
-    @test isapprox(qx, tune_jt[1]; atol=1e-15)
-    @test isapprox(qy, tune_jt[2]; atol=1e-15)
+    @test qx == tune_jt[1]
+    @test qy == tune_jt[2]
 
     ξx, ξy = getchrom(ring, beam; dp=0.0)
     @test isfinite(ξx)
     @test isfinite(ξy)
-    @test isapprox(ξx, chrom_jt[1]; atol=1e-8)
-    @test isapprox(ξy, chrom_jt[2]; atol=1e-8)
+    @test ξx == chrom_jt[1]
+    @test ξy == chrom_jt[2]
 
     tw = twissline(ring, beam)
     @test length(tw.s) == length(ring) + 1
@@ -47,14 +59,14 @@ end
 
 @testset "TrackPad JuTrack-Compatible Optics/Map Interface" begin
     m66 = fastfindm66(ring, 0.0; E0=3.0e9, m0=M_ELECTRON)
-    m66_ref = one_turn_map(ring, beam)
-    @test isapprox(m66, m66_ref; atol=1e-7)
+    m66_ref = one_turn_map(ring, beam; h=1.5e-8)
+    @test m66 == m66_ref
 
     m66_ord0 = findm66(ring, 0.0, 0; E0=3.0e9, m0=M_ELECTRON)
-    @test isapprox(m66_ord0, m66; atol=1e-12)
+    @test m66_ord0 == m66
 
     m66_jt = JuTrack.fastfindm66(ring_jt, 0.0; E0=3.0e9, m0=JuTrack.m_e)
-    @test isapprox(m66, m66_jt; atol=1e-7)
+    @test m66 == m66_jt
 
     refpts = [2, 4]
     mref = fastfindm66_refpts(ring, 0.0, refpts; E0=3.0e9, m0=M_ELECTRON)
@@ -100,4 +112,5 @@ end
         @test isapprox(twline_ref[i].optics_y.beta, twj_ref[i].betay; atol=1e-13)
         @test isapprox(twline_ref[i].optics_y.alpha, twj_ref[i].alphay; atol=1e-13)
     end
+end
 end

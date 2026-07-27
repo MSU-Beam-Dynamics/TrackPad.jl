@@ -186,7 +186,8 @@ end
 """
     fastfindm66(lat, dp=0.0; E0=3e9, m0=M_ELECTRON, orb=zeros(6), h=3e-8)
 
-JuTrack-compatible finite-difference 6x6 map API.
+JuTrack-compatible finite-difference 6x6 map API. `h` is the full separation
+between the positive and negative perturbations, matching JuTrack's `scaling`.
 """
 function fastfindm66(lat_in, dp::Real=0.0;
                      E0::Real=3.0e9,
@@ -197,7 +198,7 @@ function fastfindm66(lat_in, dp::Real=0.0;
     beam = _beam_from_energy_mass(E0, m0)
     T = typeof(beam.energy)
     ref = _reference6(T, dp, orb)
-    return one_turn_map(lat, beam; reference=ref, h=T(h))
+    return one_turn_map(lat, beam; reference=ref, h=T(h) / 2)
 end
 
 """
@@ -219,7 +220,8 @@ end
 """
     fastfindm66_refpts(lat, dp, refpts; E0=3e9, m0=M_ELECTRON, orb=zeros(6), h=3e-8)
 
-Return 6x6 segment maps at each reference point index.
+Return 6x6 segment maps at each reference point index. `h` is the full
+positive-to-negative perturbation separation.
 """
 function fastfindm66_refpts(lat_in, dp::Real, refpts::AbstractVector{<:Integer};
                             E0::Real=3.0e9,
@@ -237,7 +239,7 @@ function fastfindm66_refpts(lat_in, dp::Real, refpts::AbstractVector{<:Integer};
     for (i, rp) in enumerate(refpts)
         seg = prev == 0 ? lat.elements[1:rp] : lat.elements[prev+1:rp]
         seg_lat = Lattice(seg)
-        maps[:, :, i] = one_turn_map(seg_lat, beam; reference=ref, h=T(h))
+        maps[:, :, i] = one_turn_map(seg_lat, beam; reference=ref, h=T(h) / 2)
         prev = rp
     end
     return maps
@@ -271,13 +273,13 @@ end
 end
 
 """
-    gettune(lat, beam; reference=zeros, h=1e-8)
+    gettune(lat, beam; reference=zeros, h=3e-8)
 
 Return `(Qx, Qy)` from the uncoupled blocks of the one-turn map.
 """
 function gettune(lat::Lattice, beam::Beam{T};
                  reference::SVector{6,T}=zero(SVector{6,T}),
-                 h::T=T(1e-8)) where T
+                 h::T=T(3e-8)) where T
     M = findm66(lat, reference[6], 0; E0=beam.energy, m0=beam.mass, orb=collect(reference), h=h)
     return _tune_from_map(M)
 end
@@ -293,14 +295,14 @@ function _unwrap_tune_delta(q1::T, q0::T) where T
 end
 
 """
-    getchrom(lat, beam; dp=1e-6, reference=zeros, h=1e-8)
+    getchrom(lat, beam; dp=0, reference=zeros, h=3e-8)
 
 Finite-difference chromaticity `(ξx, ξy)` from tune variation with momentum offset.
 """
 function getchrom(lat::Lattice, beam::Beam{T};
                   dp::T=zero(T),
                   reference::SVector{6,T}=zero(SVector{6,T}),
-                  h::T=T(1e-8)) where T
+                  h::T=T(3e-8)) where T
     ref0 = SVector{6,T}(reference[1], reference[2], reference[3], reference[4], reference[5], T(dp))
     M0 = findm66(lat, dp, 0; E0=beam.energy, m0=beam.mass, orb=collect(ref0), h=h)
     qx0, qy0 = _tune_from_map(M0)
@@ -449,7 +451,7 @@ function twissline(lat::Lattice, beam::Beam{T};
 end
 
 """
-    periodicEdwardsTengTwiss(seq_or_lat, dp, order; E0=3e9, m0=M_ELECTRON, orb=zeros(6), h=1e-8)
+    periodicEdwardsTengTwiss(seq_or_lat, dp, order; E0=3e9, m0=M_ELECTRON, orb=zeros(6), h=3e-8)
 
 JuTrack-style periodic optics interface (uncoupled 4D projection).
 """
@@ -457,7 +459,7 @@ function periodicEdwardsTengTwiss(lat_in, dp::Real, order::Integer;
                                   E0::Real=3.0e9,
                                   m0::Real=M_ELECTRON,
                                   orb::AbstractVector=zeros(6),
-                                  h::Real=1e-8)
+                                  h::Real=3e-8)
     M = findm66(lat_in, dp, order; E0=E0, m0=m0, orb=orb, h=h)
     bx, ax, _, _ = _twiss_from_2x2(@view M[1:2, 1:2])
     by, ay, _, _ = _twiss_from_2x2(@view M[3:4, 3:4])

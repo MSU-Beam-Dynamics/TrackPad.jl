@@ -14,7 +14,8 @@ making the hot loop allocation-free and fully compatible with
 - 6D symplectic tracking with exact Hamiltonian by default
 - 16+ element types: dipoles, quadrupoles, sextupoles, RF cavities, solenoids,
   beam–beam kicks, space-charge elements, wigglers, and more
-- GPU-ready via [KernelAbstractions.jl](https://github.com/JuliaGPU/KernelAbstractions.jl)
+- **GPU-accelerated tracking** via [KernelAbstractions.jl](https://github.com/JuliaGPU/KernelAbstractions.jl):
+  multi-particle batch tracking and parameter sweeps on Metal, CUDA, or ROCm
 - Automatic-differentiation–friendly (Enzyme, ForwardDiff, PolySeries TPSA)
 - Linear optics: Twiss parameters, tunes, chromaticity, closed orbit
 - Time-dependent (turn-by-turn or real-time) element parameters

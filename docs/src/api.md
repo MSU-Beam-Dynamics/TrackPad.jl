@@ -102,6 +102,22 @@ find_closed_orbit_4d
 tpsa_map
 ```
 
+## GPU Acceleration
+
+!!! note "Extension packages"
+    GPU support requires loading a backend package alongside TrackPad.
+    See the [GPU Acceleration](@ref) guide for usage examples.
+
+```@docs
+GPULattice
+ParamSweepLattice
+gpu_adapt
+batch_linepass!
+batch_ringpass!
+param_sweep_linepass!
+cpu_batch_linepass!
+```
+
 ## [Time Dependence](@id time_dependence)
 
 ```@docs

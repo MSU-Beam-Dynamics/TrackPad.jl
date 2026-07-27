@@ -47,11 +47,19 @@ const line_jt = [
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+# PolySeries leaves inactive degree blocks uninitialized. Read coefficients
+# through the degree mask so inactive terms have their mathematical value zero.
+@inline function tp_coefficient(series, index::Int)
+    degree = Int(series.desc.polymap.map[index, 1])
+    active = (series.degree_mask[] & (UInt64(1) << degree)) != 0
+    return active ? series.c[index] : zero(eltype(series.c))
+end
+
 # Extract 6×6 linear map from TrackPad PolySeries output
 function tp_to_matrix(r_tpsa::SVector{6})
     M = zeros(Float64, 6, 6)
     for i in 1:6, j in 1:6
-        M[i, j] = r_tpsa[i].c[j+1]   # c[1]=const, c[j+1]=coeff of var j
+        M[i, j] = tp_coefficient(r_tpsa[i], j + 1)
     end
     return M
 end
@@ -86,7 +94,7 @@ end
     r_tpsa = tpsa_map(ring, beam; order=1)
     r_ref  = linepass(ring, zero(SVector{6,Float64}), beam)
     for i in 1:6
-        @test isapprox(r_tpsa[i].c[1], r_ref[i]; atol=1e-14)
+        @test isapprox(tp_coefficient(r_tpsa[i], 1), r_ref[i]; atol=1e-14)
     end
 end
 
@@ -97,7 +105,10 @@ end
     #   c[2..7]    = linear terms (vars 1..6)
     #   c[8..28]   = quadratic terms (21 monomials)
     # At least some quadratic coefficients should be non-zero for a thick quad ring.
-    any_nonzero = any(i -> any(abs.(r2[i].c[8:end]) .> 1e-20), 1:6)
+    any_nonzero = any(
+        i -> any(k -> abs(tp_coefficient(r2[i], k)) > 1e-20, 8:length(r2[i].c)),
+        1:6,
+    )
     @test any_nonzero
 end
 
@@ -106,7 +117,7 @@ end
     r_tpsa_co = tpsa_map(ring, beam; order=1, closed_orbit=co)
     r_ref_co  = linepass(ring, SVector{6,Float64}(co...), beam)
     for i in 1:6
-        @test isapprox(r_tpsa_co[i].c[1], r_ref_co[i]; atol=1e-14)
+        @test isapprox(tp_coefficient(r_tpsa_co[i], 1), r_ref_co[i]; atol=1e-14)
     end
 end
 
@@ -120,7 +131,8 @@ end
 
 # ── JuTrack CTPS comparison ──────────────────────────────────────────────────
 # JuTrack uses its own CTPS type (HighOrderTPS) with the same PolyMap index
-# ordering as PolySeries.  Coefficients are accessed as .map[k] vs .c[k].
+# ordering as PolySeries. JuTrack stores dense coefficients in `.map`; PolySeries
+# uses a degree mask and may leave inactive blocks of `.c` uninitialized.
 # Both packages were built from the same original C++ code base.
 
 @testset "JuTrack CTPS: first-order map matches TrackPad PolySeries" begin
@@ -149,7 +161,7 @@ end
         r_tp = tpsa_map(ring, beam; order=1)
 
         for i in 1:6
-            @test isapprox(r_tp[i].c[1], rin_jt[i].map[1]; atol=1e-14)
+            @test isapprox(tp_coefficient(r_tp[i], 1), rin_jt[i].map[1]; atol=1e-14)
         end
     end
 end
@@ -165,7 +177,7 @@ end
         nterms = length(rin_jt2[1].map)   # = 28
         @test nterms == length(r2_tp[1].c)
         for i in 1:6, k in 1:nterms
-            @test isapprox(r2_tp[i].c[k], rin_jt2[i].map[k]; atol=1e-12)
+            @test isapprox(tp_coefficient(r2_tp[i], k), rin_jt2[i].map[k]; atol=1e-12)
         end
     end
 end

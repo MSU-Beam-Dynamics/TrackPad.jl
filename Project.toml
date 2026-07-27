@@ -5,20 +5,25 @@ authors = ["Jinyu Wan <wan@frib.msu.edu>", "Yue Hao <haoyue@msu.edu>"]
 
 [deps]
 Adapt = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
-JuTrack = "a43d9089-7dde-42d4-b2b6-ab2f8db67ed6"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
-PolySeries = "6f3fcde8-8165-4326-91a7-f7698485e8a3"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 YAML = "ddb6d928-2868-570f-bddf-ab3f9cf99eb6"
 
 [weakdeps]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
+Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
+PolySeries = "6f3fcde8-8165-4326-91a7-f7698485e8a3"
+
+[sources]
+JuTrack = {path = "../JuTrack.jl"}
+PolySeries = {path = "../PolySeries.jl"}
 
 [extensions]
 TrackPadCUDAExt = "CUDA"
 TrackPadEnzymeExt = "Enzyme"
+TrackPadMetalExt = "Metal"
 TrackPadPolySeriesExt = "PolySeries"
 
 [compat]
@@ -26,6 +31,7 @@ Adapt = "4"
 CUDA = "5"
 Enzyme = "0.13"
 KernelAbstractions = "0.9"
+Metal = "1"
 PolySeries = "0.1"
 StaticArrays = "1.9"
 YAML = "0.4"
@@ -33,8 +39,10 @@ julia = "1.10"
 
 [extras]
 Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
+JuTrack = "a43d9089-7dde-42d4-b2b6-ab2f8db67ed6"
+PolySeries = "6f3fcde8-8165-4326-91a7-f7698485e8a3"
 Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Test", "Serialization", "Enzyme"]
+test = ["Test", "Serialization", "Enzyme", "JuTrack", "PolySeries"]

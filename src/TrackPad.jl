@@ -39,6 +39,9 @@ include("tpsa.jl")
 # Lattice I/O: PALS YAML and MAD-X readers/writers
 include("io.jl")
 
+# GPU-accelerated tracking (KernelAbstractions — Metal / CUDA / ROCm / CPU)
+include("gpu.jl")
+
 # Re-export key symbols
 export AbstractElement, AbstractMagnet, AbstractDrift, AbstractCavity
 export AbstractTransferMap, AbstractTransverseMap, AbstractLongitudinalRFMap
@@ -66,6 +69,12 @@ export gettune, getchrom, twissline
 export find_closed_orbit_4d, find_closed_orbit_6d
 export check_lost, drift6, strthinkick, symplectic4_pass
 export tpsa_map
+
+# GPU acceleration
+export GPULattice, ParamSweepLattice
+export gpu_adapt
+export batch_linepass!, batch_ringpass!, param_sweep_linepass!
+export cpu_batch_linepass!
 
 # Physical constants
 export M_ELECTRON, M_PROTON
