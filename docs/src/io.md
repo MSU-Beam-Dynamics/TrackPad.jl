@@ -23,20 +23,102 @@ using TrackPad
 lat, beam = read_pals("my_ring.yaml")
 ```
 
-Optional keyword arguments:
+Selection and beam keyword arguments:
 
 | Keyword | Default | Meaning |
 |---------|---------|---------|
-| `sequence` | `nothing` | Name of the `BeamLine` to use as root; first one found if `nothing` |
-| `beam_energy` | `1.0e9` | Reference kinetic energy [eV] |
-| `mass` | `M_ELECTRON` | Particle rest mass [eV] |
-| `charge` | `-1.0` | Particle charge sign |
+| `lattice` | `nothing` | PALS `Lattice` name; otherwise the last `use` statement or last lattice is selected |
+| `branch` | `nothing` | Branch name; otherwise the first branch is selected |
+| `sequence` | `nothing` | Compatibility alias accepting either a lattice or standalone `BeamLine` name |
+| `beam_energy` | `nothing` | Override reference kinetic energy [eV] |
+| `mass` | `nothing` | Override rest mass [eV] |
+| `charge` | `nothing` | Override particle charge |
+| `strict` | `true` | Reject unsupported elements and direction reversal |
+
+Without explicit beam overrides, `BeginningEle.ReferenceP` supplies the
+reference species and either `pc_ref` or `E_tot_ref`. Files without reference
+information retain the 1 GeV electron fallback.
+
+### Branch resolution
+
+```julia
+resolved = resolve_pals(
+    "collider.yaml";
+    lattice="eic",
+    branch="electron_ring",
+)
+compiled = compile_branch(resolved)
+
+compiled.lattice
+compiled.beam
+compiled.source_index[("QF", 2)]
+```
+
+`resolve_pals` handles canonical `Lattice.branches`, `use`, nested BeamLines,
+inline definitions, inheritance, and repetition. `compile_branch` turns one
+resolved path into TrackPad's flat executable lattice and retains the
+`(element name, occurrence) => lattice index` map needed by EICViBE diagnostics
+and live parameter updates.
+
+EICViBE can bypass YAML and use the same compiler directly:
+
+```julia
+compiled = compile_branch(
+    [
+        Dict("name" => "D1", "kind" => "Drift", "length" => 1.0),
+        Dict(
+            "name" => "QF",
+            "kind" => "Quadrupole",
+            "length" => 0.4,
+            "MagneticMultipoleP" => Dict("Kn1" => 0.8),
+        ),
+    ];
+    machine_name="eic",
+    branch_name="electron_ring",
+    periodic=true,
+    reference=Dict("species_ref" => "electron", "pc_ref" => 10.0e9),
+)
+```
+
+This dictionary interface is the intended JuliaCall boundary. EICViBE remains
+responsible for machine topology, route selection, multipass traversal, and
+control semantics.
+
+!!! warning "Full PALS expansion"
+    TrackPad's built-in resolver does not evaluate PALS expressions,
+    controllers, includes, forks, floor coordinates, or reference bookkeeping.
+    Load PALSJulia and use the optional extension for those files:
+
+    ```julia
+    using PALSJulia, TrackPad
+
+    resolved = resolve_pals_full(
+        "collider.yaml";
+        lattice="eic",
+        branch="electron_ring",
+    )
+    compiled = compile_branch(resolved)
+    ```
+
+    `resolve_pals_full` runs PALSJulia/pals-cpp expansion and converts its
+    `full_expanded` tree directly, without writing intermediate YAML.
 
 ### Writing a PALS file
 
 ```julia
-write_pals("output.yaml", lat; sequence_name="RING")
+write_pals(
+    "output.yaml",
+    lat;
+    beam=beam,
+    lattice_name="machine",
+    branch_name="ring",
+    periodic=true,
+)
 ```
+
+The writer emits `BeginningEle`, canonical `kind: Bend`, one `BeamLine`, one
+`Lattice`, and a final `use` statement. Duplicate TrackPad element names receive
+occurrence suffixes so different parameter values are not conflated.
 
 ### PALS file example
 
@@ -60,7 +142,7 @@ PALS:
           Kn1: -1.2
 
     - B1:
-        kind: SBend
+        kind: Bend
         length: 1.0
         BendP:
           angle_ref: 0.3927   # rad  (π/8)
@@ -80,6 +162,12 @@ PALS:
     - RING:
         kind: BeamLine
         line: [QF, D1, B1, D1, QD, D1, B1, D1, CAV]
+
+    - MACHINE:
+        kind: Lattice
+        branches: [RING]
+
+    - use: MACHINE
 ```
 
 ### Parameter group reference
@@ -101,8 +189,8 @@ PALS:
 | `RFP` | `phase` | rad/2π | `lag` (×C/freq → m) |
 | `RFP` | `harmon` | — | `h` |
 | `SolenoidP` | `Ksol` | m⁻¹ | `ks` |
-| `KickerP` | `hkick` | rad | `xkick` |
-| `KickerP` | `vkick` | rad | `ykick` |
+| `KickerP` | `Kn0` | rad | `xkick` |
+| `KickerP` | `Ks0` | rad | `ykick` |
 
 ---
 
@@ -118,7 +206,28 @@ MAD-X installation is required.
 lat, beam = read_madx("my_ring.seq")
 ```
 
-Optional keyword arguments match those of `read_pals`.
+`BEAM, PARTICLE=...` and either `PC=` or `ENERGY=` are used when explicit
+`beam_energy`, `mass`, and `charge` overrides are absent. The `sequence`
+argument is case-insensitive. `num_int_steps` controls the split-integrator
+resolution of imported multipole magnets and defaults to 10; increase it when
+comparing against analytic MAD-X linear maps.
+
+TrackPad includes a comparison utility for MAD-X TFS TWISS output:
+
+```bash
+julia --project=. scripts/compare_madx_twiss.jl model.madx model.twiss 80
+```
+
+The optional final argument is `num_int_steps`.
+The report includes periodic Twiss functions, fractional tunes, and
+closed-orbit-centered chromaticities. The chromaticity comparison uses a
+centered momentum step of `1e-5`.
+
+!!! warning "MAD-X sequence subset"
+    The built-in reader is intended for compact `LINE` files and simple
+    sequences. For production MAD-X models with positional sequence geometry,
+    `REFER`, `FROM`, `CALL`, macros, or deferred expressions, import through
+    EICViBE's `cpymad` path and pass the normalized branch to `compile_branch`.
 
 ### Supported MAD-X constructs
 
@@ -187,6 +296,12 @@ ENDSEQUENCE;
 ## API Reference
 
 ```@docs
+PALSResolvedElement
+PALSResolvedBranch
+CompiledBranch
+resolve_pals
+resolve_pals_full
+compile_branch
 read_pals
 read_madx
 write_pals

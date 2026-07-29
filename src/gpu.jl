@@ -40,7 +40,8 @@ k1_vals = MtlArray(Float32.(range(0.5, 0.6; length=N)))
 qf_idx  = findfirst(e -> isa(e, Quadrupole) && string(e.name) == "QF", lat.elements)
 ps      = ParamSweepLattice(gl, [(qf_idx, 2, k1_vals)])  # slot 2 = k1
 out     = MtlArray(zeros(Float32, N, 6))
-param_sweep_linepass!(out, zeros(Float32, 1, 6), ps)
+input   = MtlArray(repeat(zeros(Float32, 1, 6), N, 1))
+param_sweep_linepass!(out, input, ps)
 ```
 """
 
@@ -124,11 +125,16 @@ Adapt.@adapt_structure GPULattice
 # ============================================================
 
 """
-    ParamSweepLattice{T, VI, AF3, MI}
+    ParamSweepLattice{T, VI, MF, MI, MV, VE, VV}
 
 Lattice with N distinct parameter configurations.
-`fparams` is a 3-D array of shape `(N_GPU_FPARAMS, n_elems, n_configs)`.
-All configurations share the same `elem_types` and `iparams`.
+All configurations share the base `fparams`, `elem_types`, and `iparams`.
+Only the selected parameter values are stored per configuration:
+
+- `variation_index[slot, element]` maps a parameter to a variation row, or zero
+  when the base value is used.
+- `varied_elements[element]` marks elements that need an override lookup.
+- `variation_values[configuration, variation]` stores the selected values.
 
 Construct with
 ```julia
@@ -137,17 +143,41 @@ ps = ParamSweepLattice(gl, [(elem_idx, param_slot, values_vector), ...])
 """
 struct ParamSweepLattice{T,
                          VI  <: AbstractVector{Int32},
-                         AF3,                           # 3-D array
-                         MI  <: AbstractMatrix{Int32}}
+                         MF  <: AbstractMatrix{T},
+                         MI  <: AbstractMatrix{Int32},
+                         MV  <: AbstractMatrix{Int32},
+                         VE  <: AbstractVector{Int32},
+                         VV  <: AbstractMatrix{T}}
     elem_types :: VI
-    fparams    :: AF3         # (N_GPU_FPARAMS, n_elems, n_configs)
+    fparams    :: MF          # shared base: (N_GPU_FPARAMS, n_elems)
     iparams    :: MI
+    variation_index  :: MV    # (N_GPU_FPARAMS, n_elems)
+    varied_elements  :: VE    # nonzero when an element has an override
+    variation_values :: VV    # (n_configs, n_variations)
     n_elems    :: Int32
     n_configs  :: Int32
+    n_variations :: Int32
     beti       :: T
 end
 
 Adapt.@adapt_structure ParamSweepLattice
+
+struct _SweepParameterView{MF, MV, VV}
+    base::MF
+    variation_index::MV
+    variation_values::VV
+    config::Int32
+end
+
+@inline function Base.getindex(params::_SweepParameterView,
+                               slot::Integer,
+                               element::Integer)
+    variation = @inbounds params.variation_index[slot, element]
+    if iszero(variation)
+        return @inbounds params.base[slot, element]
+    end
+    return @inbounds params.variation_values[params.config, variation]
+end
 
 # ============================================================
 # Inline GPU physics helpers
@@ -336,13 +366,19 @@ One GPU thread processes one lattice configuration.
 
 `in_r`     — `n_configs×6` initial coordinates (replicate if constant)
 `out`      — `n_configs×6` output (written in-place)
-`fparams3` — `(N_GPU_FPARAMS, n_elems, n_configs)` parameter cube
+`fparams` — shared `(N_GPU_FPARAMS, n_elems)` base parameters
+`variation_index` — maps `(slot, element)` to a variation row
+`varied_elements` — marks elements that require override lookup
+`variation_values` — `(n_configs, n_variations)` selected parameter values
 """
 @kernel function _gpu_param_sweep_kernel!(out,
                                            @Const(in_r),
                                            @Const(etypes),
-                                           @Const(fparams3),
+                                           @Const(fparams),
                                            @Const(iparams),
+                                           @Const(variation_index),
+                                           @Const(varied_elements),
+                                           @Const(variation_values),
                                            n_elems::Int32,
                                            beti)
     j = @index(Global, Linear)
@@ -355,10 +391,12 @@ One GPU thread processes one lattice configuration.
     z  = @inbounds in_r[j, 5]
     d  = @inbounds in_r[j, 6]
 
-    # Use a view-like slice at config index j
+    params = _SweepParameterView(fparams, variation_index, variation_values,
+                                 Int32(j))
     x, px, y, py, z, d = _gpu_track_all_sweep(x, px, y, py, z, d,
-                                                etypes, fparams3, iparams,
-                                                n_elems, Int32(j), T(beti))
+                                                etypes, params, iparams,
+                                                varied_elements,
+                                                n_elems, T(beti))
 
     @inbounds out[j, 1] = x
     @inbounds out[j, 2] = px
@@ -384,12 +422,16 @@ end
 end
 
 @inline function _gpu_track_all_sweep(x::T, px::T, y::T, py::T, z::T, d::T,
-                                       etypes, fparams3, iparams,
-                                       n_elems::Int32, config::Int32, beti::T) where T
+                                       etypes, params, iparams, varied_elements,
+                                       n_elems::Int32, beti::T) where T
     for i in Int32(1):n_elems
-        x, px, y, py, z, d = _gpu_apply_elem_sweep(x, px, y, py, z, d,
-                                                     etypes, fparams3, iparams,
-                                                     i, config, beti)
+        if iszero(@inbounds varied_elements[i])
+            x, px, y, py, z, d = _gpu_apply_elem(
+                x, px, y, py, z, d, etypes, params.base, iparams, i, beti)
+        else
+            x, px, y, py, z, d = _gpu_apply_elem(
+                x, px, y, py, z, d, etypes, params, iparams, i, beti)
+        end
     end
     return x, px, y, py, z, d
 end
@@ -491,103 +533,6 @@ end
                                pa0, pa1, pa2, pa3,
                                pb0, pb1, pb2, pb3, one(T))
     end  # GPULattice construction guarantees a supported element type code.
-
-    return x, px, y, py, z, d
-end
-
-# Parameter-sweep version: reads fparams3[slot, elem, config]
-@inline function _gpu_apply_elem_sweep(x::T, px::T, y::T, py::T, z::T, d::T,
-                                        etypes, fparams3, iparams,
-                                        i::Int32, j::Int32, beti::T) where T
-    etype  = @inbounds etypes[i]
-    L      = @inbounds fparams3[1, i, j]
-    nsteps = @inbounds iparams[1, i]
-
-    if etype == GPU_DRIFT
-        x, px, y, py, z, d = _gpu_drift(x, px, y, py, z, d, L, beti)
-
-    elseif etype == GPU_MARKER
-        # no-op
-
-    elseif etype == GPU_QUAD || etype == GPU_SEXT || etype == GPU_OCT
-        k   = @inbounds fparams3[2, i, j]
-        pa0 = @inbounds fparams3[3, i, j]; pa1 = @inbounds fparams3[4, i, j]
-        pa2 = @inbounds fparams3[5, i, j]; pa3 = @inbounds fparams3[6, i, j]
-        pb0 = @inbounds fparams3[7, i, j]
-        pb1 = @inbounds fparams3[8, i, j] + (etype == GPU_QUAD ? k       : zero(T))
-        pb2 = @inbounds fparams3[9, i, j] + (etype == GPU_SEXT ? k/T(2)  : zero(T))
-        pb3 = @inbounds fparams3[10,i, j] + (etype == GPU_OCT  ? k/T(6)  : zero(T))
-        x, px, y, py, z, d = _gpu_symp4(x, px, y, py, z, d, L, beti,
-                                          pa0, pa1, pa2, pa3,
-                                          pb0, pb1, pb2, pb3, nsteps)
-
-    elseif etype == GPU_SBEND
-        angle  = @inbounds fparams3[2, i, j]
-        e1     = @inbounds fparams3[3, i, j]; e2    = @inbounds fparams3[4, i, j]
-        fint1  = @inbounds fparams3[5, i, j]; fint2 = @inbounds fparams3[6, i, j]
-        gap    = @inbounds fparams3[7, i, j]
-        irho   = @inbounds fparams3[8, i, j]
-        pa0    = @inbounds fparams3[9, i, j];  pa1 = @inbounds fparams3[10,i, j]
-        pa2    = @inbounds fparams3[11,i, j];  pa3 = @inbounds fparams3[12,i, j]
-        pb0    = @inbounds fparams3[13,i, j];  pb1 = @inbounds fparams3[14,i, j]
-        pb2    = @inbounds fparams3[15,i, j];  pb3 = @inbounds fparams3[16,i, j]
-        fringe_e = @inbounds fparams3[17,i, j]
-        fringe_x = @inbounds fparams3[18,i, j]
-        if fringe_e != zero(T)
-            x, px, y, py = _gpu_edge(x, px, y, py, d, irho, e1, fint1, gap)
-        end
-        x, px, y, py, z, d = _gpu_symp4_bend(x, px, y, py, z, d, L, beti,
-                                               pa0, pa1, pa2, pa3,
-                                               pb0, pb1, pb2, pb3,
-                                               irho, nsteps)
-        if fringe_x != zero(T)
-            x, px, y, py = _gpu_edge(x, px, y, py, d, irho, e2, fint2, gap)
-        end
-
-    elseif etype == GPU_RFCAV
-        volt   = @inbounds fparams3[2, i, j]
-        freq   = @inbounds fparams3[3, i, j]
-        lag    = @inbounds fparams3[4, i, j]
-        energy = @inbounds fparams3[5, i, j]
-        philag = @inbounds fparams3[7, i, j]
-        if L > zero(T)
-            x, px, y, py, z, d = _gpu_drift(x, px, y, py, z, d, L/T(2), beti)
-        end
-        if energy > zero(T)
-            nv    = volt / energy
-            phase = T(2*pi) * freq * (z - lag) / T(2.99792458e8) - philag
-            beta  = one(T) / beti
-            d     = d - nv * sin(phase) / (beta * beta)
-        end
-        if L > zero(T)
-            x, px, y, py, z, d = _gpu_drift(x, px, y, py, z, d, L/T(2), beti)
-        end
-
-    elseif etype == GPU_CORR
-        xkick  = @inbounds fparams3[2, i, j]
-        ykick  = @inbounds fparams3[3, i, j]
-        p_norm = one(T) / (one(T) + d)
-        NormL  = L * p_norm
-        z  = z + NormL * p_norm * (xkick*xkick/T(3) + ykick*ykick/T(3) +
-                                    px*px + py*py + px*xkick + py*ykick) / T(2)
-        x  = x  + NormL * (px + xkick/T(2))
-        y  = y  + NormL * (py + ykick/T(2))
-        px = px + xkick
-        py = py + ykick
-
-    elseif etype == GPU_SOL
-        ks = @inbounds fparams3[2, i, j]
-        x, px, y, py, z, d = _gpu_solenoid(x, px, y, py, z, d, L, ks, beti)
-
-    elseif etype == GPU_THIN
-        pa0 = @inbounds fparams3[2, i, j]; pa1 = @inbounds fparams3[3, i, j]
-        pa2 = @inbounds fparams3[4, i, j]; pa3 = @inbounds fparams3[5, i, j]
-        pb0 = @inbounds fparams3[6, i, j]; pb1 = @inbounds fparams3[7, i, j]
-        pb2 = @inbounds fparams3[8, i, j]; pb3 = @inbounds fparams3[9, i, j]
-        px, py = _gpu_strkick(px, py, x, y,
-                               pa0, pa1, pa2, pa3,
-                               pb0, pb1, pb2, pb3, one(T))
-    end
 
     return x, px, y, py, z, d
 end
@@ -750,14 +695,22 @@ end
 # ============================================================
 
 """
-    ParamSweepLattice(gl::GPULattice, variations) -> ParamSweepLattice
+    ParamSweepLattice(gl::GPULattice, variations; mode=:aligned)
 
 Build a parameter sweep from a base `GPULattice` by varying selected
-float parameter slots across `N` configurations.
+float parameter slots.
 
 `variations` is a vector of `(elem_idx, param_slot, values)` tuples where
-`values` is an `N`-element vector/array of parameter values.  All variation
-vectors must have the same length `N`.
+`values` is a vector/array of parameter values.
+
+- `mode=:aligned` associates values with the same index and requires equal
+  lengths. This supports Monte Carlo trials and correlated scans.
+- `mode=:cartesian` forms the Cartesian product of the variation vectors.
+
+The base `18 × M` parameter table is shared. Only an `N × K` matrix of varied
+values, an `18 × M` integer lookup, and an `M`-entry element mask are allocated,
+where `K` is the number of varied parameters and `N` is the number of
+configurations.
 
 ## Float parameter slots for common elements
 
@@ -774,44 +727,104 @@ vectors must have the same length `N`.
 ## Example
 
 ```julia
-# Scan quad QF over 1000 k1 values
+# Scan quad QF over 1000 k1 values.
 ps = ParamSweepLattice(gl, [(qf_idx, 2, k1_range)])
+
+# Scan every QF/QD combination.
+ps = ParamSweepLattice(
+    gl,
+    [(qf_idx, 2, qf_values), (qd_idx, 2, qd_values)];
+    mode=:cartesian,
+)
 ```
 """
-function ParamSweepLattice(gl::GPULattice{T}, variations) where T
-    # All variation vectors must have the same length
-    n_configs = Int32(length(first(variations)[3]))
-    n         = Int(gl.n_elems)
+function ParamSweepLattice(gl::GPULattice{T}, variations;
+                           mode::Symbol=:aligned) where T
+    mode in (:aligned, :cartesian) ||
+        throw(ArgumentError("mode must be :aligned or :cartesian"))
+    isempty(variations) &&
+        throw(ArgumentError("at least one parameter variation is required"))
 
-    # Start from base fparams (bring to CPU if on GPU)
-    base = Array(gl.fparams)   # (N_GPU_FPARAMS, n_elems)
+    n_elements = Int(gl.n_elems)
+    n_variations = length(variations)
+    n_variations <= typemax(Int32) ||
+        throw(ArgumentError("too many parameter variations"))
 
-    # Build 3-D param cube on CPU by replicating base across configs
-    fparams3_cpu = Array{T, 3}(undef, N_GPU_FPARAMS, n, Int(n_configs))
-    for j in 1:n_configs
-        fparams3_cpu[:, :, j] .= base
+    value_vectors = Vector{Vector{T}}(undef, n_variations)
+    lengths = Vector{Int}(undef, n_variations)
+    variation_index_cpu = zeros(Int32, Int(N_GPU_FPARAMS), n_elements)
+    varied_elements_cpu = zeros(Int32, n_elements)
+
+    for (variation, entry) in enumerate(variations)
+        length(entry) == 3 ||
+            throw(ArgumentError("each variation must be (element, slot, values)"))
+        element, slot, values = entry
+        element isa Integer ||
+            throw(ArgumentError("variation element index must be an integer"))
+        slot isa Integer ||
+            throw(ArgumentError("variation parameter slot must be an integer"))
+        1 <= element <= n_elements ||
+            throw(BoundsError(gl.elem_types, element))
+        1 <= slot <= N_GPU_FPARAMS ||
+            throw(BoundsError(gl.fparams, (slot, element)))
+        iszero(variation_index_cpu[slot, element]) ||
+            throw(ArgumentError("parameter slot $slot of element $element is varied more than once"))
+
+        vals = vec(T.(Array(values)))
+        isempty(vals) &&
+            throw(ArgumentError("parameter variation values must be nonempty"))
+        value_vectors[variation] = vals
+        lengths[variation] = length(vals)
+        variation_index_cpu[slot, element] = Int32(variation)
+        varied_elements_cpu[element] = one(Int32)
     end
 
-    # Apply variations (pull device arrays to CPU if necessary)
-    for (elem_idx, param_slot, vals) in variations
-        vv = Array(vals)
-        for j in 1:n_configs
-            fparams3_cpu[param_slot, elem_idx, j] = T(vv[j])
+    if mode === :aligned
+        all(==(first(lengths)), lengths) ||
+            throw(DimensionMismatch("all aligned variation vectors must have the same length"))
+        n_configs = first(lengths)
+        variation_values_cpu = Matrix{T}(undef, n_configs, n_variations)
+        for variation in 1:n_variations
+            variation_values_cpu[:, variation] .= value_vectors[variation]
+        end
+    else
+        n_configs = prod(lengths; init=1)
+        n_configs > 0 ||
+            throw(ArgumentError("Cartesian parameter grid is empty"))
+        variation_values_cpu = Matrix{T}(undef, n_configs, n_variations)
+        for (config, index) in enumerate(CartesianIndices(Tuple(lengths)))
+            for variation in 1:n_variations
+                variation_values_cpu[config, variation] =
+                    value_vectors[variation][index[variation]]
+            end
         end
     end
+    n_configs <= typemax(Int32) ||
+        throw(ArgumentError("number of parameter configurations exceeds Int32 capacity"))
 
-    # Upload to same device as gl.fparams
-    backend  = KernelAbstractions.get_backend(gl.fparams)
-    fparams3 = KernelAbstractions.allocate(backend, T,
-                   (N_GPU_FPARAMS, n, Int(n_configs)))
-    copyto!(fparams3, fparams3_cpu)
+    backend = KernelAbstractions.get_backend(gl.fparams)
+    variation_index = KernelAbstractions.allocate(
+        backend, Int32, size(variation_index_cpu))
+    varied_elements = KernelAbstractions.allocate(
+        backend, Int32, size(varied_elements_cpu))
+    variation_values = KernelAbstractions.allocate(
+        backend, T, size(variation_values_cpu))
+    copyto!(variation_index, variation_index_cpu)
+    copyto!(varied_elements, varied_elements_cpu)
+    copyto!(variation_values, variation_values_cpu)
 
-    return ParamSweepLattice(gl.elem_types,
-                              fparams3,
-                              gl.iparams,
-                              gl.n_elems,
-                              n_configs,
-                              gl.beti)
+    return ParamSweepLattice(
+        gl.elem_types,
+        gl.fparams,
+        gl.iparams,
+        variation_index,
+        varied_elements,
+        variation_values,
+        gl.n_elems,
+        Int32(n_configs),
+        Int32(n_variations),
+        gl.beti,
+    )
 end
 
 # ============================================================
@@ -918,10 +931,15 @@ in_r = repeat(r0', n_configs, 1)   # or use MtlArray(repeat(...))
 function param_sweep_linepass!(out::AbstractMatrix{T},
                                  in_r::AbstractMatrix{T},
                                  ps::ParamSweepLattice{T}) where T
-    n_configs = Int32(ps.n_configs)
+    n_configs = Int(ps.n_configs)
+    size(in_r) == (n_configs, 6) ||
+        throw(DimensionMismatch("in_r must have size N_configs×6"))
+    size(out) == (n_configs, 6) ||
+        throw(DimensionMismatch("out must have size N_configs×6"))
     backend   = get_backend(out)
     kernel    = _gpu_param_sweep_kernel!(backend, 256)
     kernel(out, in_r, ps.elem_types, ps.fparams, ps.iparams,
+           ps.variation_index, ps.varied_elements, ps.variation_values,
            ps.n_elems, ps.beti;
            ndrange = n_configs)
     KernelAbstractions.synchronize(backend)

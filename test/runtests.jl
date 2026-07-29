@@ -18,6 +18,7 @@ end
         include_isolated(:VerifyEnzymeCompatibility, "verify_enzyme_compat.jl")
         include_isolated(:VerifyElements, "verify_elements.jl")
         include_isolated(:VerifyGPU, "verify_gpu.jl")
+        include_isolated(:VerifyIO, "verify_io.jl")
     end
     @testset "TPSA" begin
         include_isolated(:VerifyTPSA, "verify_tpsa.jl")

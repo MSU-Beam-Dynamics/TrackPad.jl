@@ -295,22 +295,63 @@ function _unwrap_tune_delta(q1::T, q0::T) where T
 end
 
 """
-    getchrom(lat, beam; dp=0, reference=zeros, h=3e-8)
+    getchrom(lat, beam; dp=0, reference=zeros, h=3e-8, dpp=1e-8,
+             centered=false, closed_orbit=false)
 
 Finite-difference chromaticity `(ξx, ξy)` from tune variation with momentum offset.
+Set `centered=true` for a centered momentum derivative and
+`closed_orbit=true` to evaluate each map around its off-momentum closed orbit.
+The defaults preserve the JuTrack-compatible forward-difference convention.
 """
 function getchrom(lat::Lattice, beam::Beam{T};
                   dp::T=zero(T),
                   reference::SVector{6,T}=zero(SVector{6,T}),
-                  h::T=T(3e-8)) where T
-    ref0 = SVector{6,T}(reference[1], reference[2], reference[3], reference[4], reference[5], T(dp))
-    M0 = findm66(lat, dp, 0; E0=beam.energy, m0=beam.mass, orb=collect(ref0), h=h)
-    qx0, qy0 = _tune_from_map(M0)
-    dpp = T(1e-8)
-    ref1 = SVector{6,T}(reference[1], reference[2], reference[3], reference[4], reference[5], T(dp) + dpp)
-    M1 = findm66(lat, dp + dpp, 0; E0=beam.energy, m0=beam.mass, orb=collect(ref1), h=h)
-    qx1, qy1 = _tune_from_map(M1)
-    return (qx1 - qx0) / dpp, (qy1 - qy0) / dpp
+                  h::T=T(3e-8),
+                  dpp::T=T(1e-8),
+                  centered::Bool=false,
+                  closed_orbit::Bool=false) where T
+    dpp > zero(T) || throw(ArgumentError("dpp must be positive"))
+
+    function tune_at(momentum::T)
+        transverse = if closed_orbit
+            find_closed_orbit_4d(
+                lat, beam;
+                dp=momentum,
+                x0=SVector{4,T}(
+                    reference[1], reference[2], reference[3], reference[4],
+                ),
+            )
+        else
+            SVector{4,T}(
+                reference[1], reference[2], reference[3], reference[4],
+            )
+        end
+        ref = SVector{6,T}(
+            transverse[1], transverse[2], transverse[3], transverse[4],
+            reference[5], momentum,
+        )
+        M = findm66(
+            lat, momentum, 0;
+            E0=beam.energy, m0=beam.mass, orb=collect(ref), h=h,
+        )
+        return _tune_from_map(M)
+    end
+
+    if centered
+        qminus = tune_at(dp - dpp)
+        qplus = tune_at(dp + dpp)
+        return (
+            _unwrap_tune_delta(qplus[1], qminus[1]) / (2dpp),
+            _unwrap_tune_delta(qplus[2], qminus[2]) / (2dpp),
+        )
+    end
+
+    q0 = tune_at(dp)
+    q1 = tune_at(dp + dpp)
+    return (
+        _unwrap_tune_delta(q1[1], q0[1]) / dpp,
+        _unwrap_tune_delta(q1[2], q0[2]) / dpp,
+    )
 end
 
 function _numerical_jacobian(f::Function, x::Vector{T}; h::T=T(1e-6)) where T

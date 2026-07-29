@@ -98,3 +98,108 @@ using Enzyme
         TrackPad.USE_EXACT_HAMILTONIAN = old_exact
     end
 end
+
+@testset "Batched Enzyme tracking derivatives" begin
+    T = Float64
+    beam = Beam(T(3e9))
+    lat = Lattice([
+        Drift(T(0.4)),
+        Sextupole(T(0.2), T(1.1); num_int_steps=4),
+        Quadrupole(T(0.3), T(0.7); num_int_steps=4),
+        Drift(T(0.6)),
+    ])
+    gl = GPULattice(lat, beam; dtype=T)
+    coordinates = T[
+         8e-4   2e-4   6e-4  -1.5e-4   1e-4  -2e-4
+        -5e-4  -1e-4   3e-4   1.0e-4  -2e-4   1e-4
+         2e-4   0.5e-4 -4e-4  0.7e-4   0.0    3e-4
+    ]
+    original = copy(coordinates)
+    n_particles = size(coordinates, 1)
+
+    function tracked(input)
+        output = copy(input)
+        batch_linepass!(output, gl)
+        return output
+    end
+
+    jacobian = zeros(T, n_particles, 6, 6)
+    @test batch_jacobian!(jacobian, coordinates, gl) === jacobian
+    @test coordinates == original
+    @test all(isfinite, jacobian)
+
+    jacobian_step = T(1e-6)
+    for input_coordinate in 1:6
+        plus = copy(coordinates)
+        minus = copy(coordinates)
+        plus[:, input_coordinate] .+= jacobian_step
+        minus[:, input_coordinate] .-= jacobian_step
+        finite_difference = (tracked(plus) .- tracked(minus)) ./ (2jacobian_step)
+        @test isapprox(
+            jacobian[:, :, input_coordinate],
+            finite_difference;
+            rtol=2e-7,
+            atol=2e-9,
+        )
+    end
+
+    vectors = T[
+         0.7  -0.2   0.1   0.4  -0.3   0.2
+        -0.4   0.6  -0.2   0.1   0.5  -0.3
+         0.2   0.1   0.5  -0.6   0.3   0.4
+    ]
+    second_order_step = T(1e-5)
+    product = zeros(T, n_particles, 6, 6)
+    @test batch_hessian_vector_product!(
+        product,
+        coordinates,
+        vectors,
+        gl;
+        step=second_order_step,
+    ) === product
+    @test coordinates == original
+    @test all(isfinite, product)
+
+    # Contract H*v with v and compare with a second directional difference
+    # of the primal tracking map.
+    primal_step = T(1e-4)
+    plus = coordinates .+ primal_step .* vectors
+    minus = coordinates .- primal_step .* vectors
+    second_directional = (
+        tracked(plus) .- T(2) .* tracked(coordinates) .+ tracked(minus)
+    ) ./ primal_step^2
+    contracted = dropdims(sum(product .* reshape(vectors, n_particles, 1, 6); dims=3); dims=3)
+    @test isapprox(contracted, second_directional; rtol=2e-4, atol=2e-6)
+
+    hessian = zeros(T, n_particles, 6, 6, 6)
+    @test batch_hessian!(
+        hessian,
+        coordinates,
+        gl;
+        step=second_order_step,
+    ) === hessian
+    @test coordinates == original
+    @test all(isfinite, hessian)
+    @test hessian == permutedims(hessian, (1, 2, 4, 3))
+
+    reconstructed = dropdims(
+        sum(hessian .* reshape(vectors, n_particles, 1, 1, 6); dims=4);
+        dims=4,
+    )
+    @test isapprox(reconstructed, product; rtol=2e-7, atol=2e-9)
+
+    @test_throws DimensionMismatch batch_jacobian!(zeros(T, n_particles, 6, 5), coordinates, gl)
+    @test_throws DimensionMismatch batch_hessian_vector_product!(
+        product,
+        coordinates,
+        zeros(T, n_particles, 5),
+        gl,
+    )
+    @test_throws ArgumentError batch_hessian!(hessian, coordinates, gl; step=0.0)
+    @test_throws ArgumentError batch_hessian!(
+        hessian,
+        coordinates,
+        gl;
+        method=:nested_forward,
+    )
+end

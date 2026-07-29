@@ -116,6 +116,9 @@ batch_linepass!
 batch_ringpass!
 param_sweep_linepass!
 cpu_batch_linepass!
+batch_jacobian!
+batch_hessian_vector_product!
+batch_hessian!
 ```
 
 ## [Time Dependence](@id time_dependence)

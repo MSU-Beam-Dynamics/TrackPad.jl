@@ -47,6 +47,14 @@ chrom_jt = JuTrack.getchrom(ring_jt; energy=3.0e9, mass=JuTrack.m_e)
     @test ξx == chrom_jt[1]
     @test ξy == chrom_jt[2]
 
+    ξx_centered, ξy_centered = getchrom(
+        ring, beam;
+        dpp=1.0e-5, centered=true, closed_orbit=true,
+    )
+    @test isfinite(ξx_centered)
+    @test isfinite(ξy_centered)
+    @test_throws ArgumentError getchrom(ring, beam; dpp=0.0)
+
     tw = twissline(ring, beam)
     @test length(tw.s) == length(ring) + 1
     @test length(tw.betax) == length(ring) + 1

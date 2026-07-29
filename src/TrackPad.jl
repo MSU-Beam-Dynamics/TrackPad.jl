@@ -76,6 +76,32 @@ export gpu_adapt
 export batch_linepass!, batch_ringpass!, param_sweep_linepass!
 export cpu_batch_linepass!
 
+# Automatic differentiation (implemented by TrackPadEnzymeExt)
+"""
+    batch_jacobian!(jacobian, coordinates, gl; nturns=1)
+
+Compute one tracking Jacobian per initial condition using Enzyme.
+Requires `using Enzyme`.
+"""
+function batch_jacobian! end
+
+"""
+    batch_hessian_vector_product!(result, coordinates, vectors, gl; kwargs...)
+
+Compute one tracking Hessian-vector product per initial condition.
+Requires `using Enzyme`.
+"""
+function batch_hessian_vector_product! end
+
+"""
+    batch_hessian!(hessian, coordinates, gl; kwargs...)
+
+Compute the full tracking Hessian for each initial condition.
+Requires `using Enzyme`.
+"""
+function batch_hessian! end
+export batch_jacobian!, batch_hessian_vector_product!, batch_hessian!
+
 # Physical constants
 export M_ELECTRON, M_PROTON
 

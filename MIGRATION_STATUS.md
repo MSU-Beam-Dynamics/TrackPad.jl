@@ -46,7 +46,7 @@
 | 2.6 Optics and Orbit APIs | IMPLEMENTED AND VERIFIED | JuTrack-compatible finite-difference separation and exact inverse-velocity conventions are covered by parity tests. |
 | 3. TPSA Maps | IMPLEMENTED AS OPTIONAL EXTENSION | `PolySeries` supplies TPSA types; standalone first- and second-order parity tests pass. |
 | 4. Time Dependence | IMPLEMENTED | Time-dependent parameters, element materialization, and verification are present. |
-| 5. Lattice I/O | IMPLEMENTED; TESTS MISSING | PALS YAML read/write and MAD-X parsing are implemented and documented, but no automated I/O tests exist. |
+| 5. Lattice I/O | IMPLEMENTED FOR DOCUMENTED SUBSET | Canonical PALS branch resolution/writing, an EICViBE-oriented in-memory compiler, and compact MAD-X parsing have isolated automated coverage. Full PALS expansion delegates to PALSJulia; production MAD-X sequence import should use EICViBE/cpymad. |
 | 6. Enzyme AD | PARTIAL | Generic Enzyme compatibility tests pass; custom extension-level AD rules remain TODO. |
 | 7. GPU Tracking | IMPLEMENTED FOR SUPPORTED ELEMENTS | CPU backend parity is in the package suite; CUDA Float32/Float64 tracking is verified on an NVIDIA A100. |
 | 8. Documentation | IN PROGRESS | User, element, I/O, TPSA, GPU, and API documentation exists; GPU documentation and related files are not yet committed. |
@@ -88,15 +88,17 @@ Legacy grouped files (`linear.jl`, `multipoles.jl`, `bends.jl`,
 
 ## Verification Status
 
-The 2026-07-22 verification used Julia 1.12.6 through the package test target.
+The latest verification on 2026-07-28 used Julia 1.12.6 through the package
+test target on `aphpc`.
 No numerical or test-integration failures were observed.
 
 ### Verified Results
 
-- The latest complete `Pkg.test()` invocation reported **465 passed, 0 failed,
-  2 intentional skips**.
+- The latest complete `Pkg.test()` invocation reported **603 passed, 0 failed,
+  2 intentional broken tests**.
 - The result includes CPU physics, ExactSBend, optics, closed orbit, time
-  dependence, Enzyme compatibility, element parity, and TPSA verification.
+  dependence, Enzyme compatibility, element parity, TPSA verification, and
+  PALS/MAD-X/EICViBE interchange coverage.
 - CPU `GPULattice` batch smoke test: maximum difference from ordinary tracking
   was `0.0`; parameter-sweep output was finite.
 
@@ -218,26 +220,53 @@ Current limitations:
 
 ## Lattice I/O Status
 
-- `read_pals`: implemented
-- `write_pals`: implemented
-- `read_madx`: implemented
+- `resolve_pals`: canonical lattice/branch selection, nested BeamLines,
+  repetition, inline definitions, inheritance, occurrence identity, and
+  reference-particle extraction are implemented.
+- `resolve_pals_full`: the optional PALSJulia extension consumes its
+  `full_expanded` tree without an intermediate YAML file.
+- `compile_branch`: compiles resolved PALS or EICViBE-style in-memory element
+  dictionaries and preserves occurrence-to-TrackPad index mappings.
+- `read_pals`: strict canonical branch compilation is implemented.
+- `write_pals`: emits a canonical BeginningEle/BeamLine/Lattice/use document.
+- `read_madx`: compact LINE/simple-sequence parsing plus BEAM species and
+  reference momentum/energy conversion are implemented.
+- The EIC RCS `RCS9GeV40CellV1.madx` LINE lattice imports as 2,850 elements.
+  At 80 integration steps its fractional tunes agree with the supplied MAD-X
+  TWISS table within `7e-9`, and all four beta/alpha arrays within `3e-8`.
+- Its centered TrackPad chromaticity converges to `(0.82009799, 0.99729708)`
+  versus MAD-X `(0.78937414, 1.09294806)`. The discrepancy is not caused by
+  finite-difference step, integration resolution, K2 normalization, or the
+  off-momentum closed orbit; the remaining off-momentum map convention needs
+  investigation.
+- `scripts/compare_madx_twiss.jl` provides reusable MAD-X TFS comparison.
 - User documentation exists in `docs/src/io.md`.
-- Automated parser, round-trip, malformed-input, and representative lattice
-  fixture tests are still missing.
+- `test/verify_io.jl` covers canonical PALS resolution, inline branches,
+  inheritance/repetition, strict errors, round trips, duplicate names,
+  reference beams, MAD-X beam conversion, and EICViBE in-memory compilation.
+- Full PALS expressions, controllers, includes, forks, and bookkeeping use
+  PALSJulia/pals-cpp expansion.
+- Production MAD-X placement semantics remain delegated to EICViBE/cpymad.
 
 ## Repository State at Audit
 
-The current `main` working tree contains modified and untracked GPU,
-Metal-extension, script, and documentation files. The GPU work described above
-is therefore workspace state and is not fully represented by the current HEAD
-commit.
+The `codex/pals-eicvibe-compat` branch was created from a working tree that
+already contained modified and untracked GPU, Metal-extension, script, and
+documentation files. Those pre-existing changes remain unstaged alongside the
+PALS/EICViBE work and are not fully represented by the current HEAD commit.
 
 ## Next Actions
 
-1. Add PALS and MAD-X I/O tests, including round-trip and error-path coverage.
-2. Implement and verify Enzyme extension rules where generic differentiation is
+The prioritized TrackPad-side integration backlog is maintained in
+`EICVIBE_INTEGRATION_TODO.md`.
+
+1. Stabilize the EICViBE bridge contract and complete the minimum optics,
+   diagnostics, and live-update APIs in `EICVIBE_INTEGRATION_TODO.md`.
+2. Add PALSJulia/pals-cpp conformance fixtures and CI coverage for
+   `resolve_pals_full`.
+3. Implement and verify Enzyme extension rules where generic differentiation is
    insufficient.
-3. Add automated Metal hardware verification and expand GPU element coverage
+4. Add automated Metal hardware verification and expand GPU element coverage
    only where exact CPU-equivalent kernels are implemented.
-4. Build the documentation in a clean environment and commit the completed GPU,
+5. Build the documentation in a clean environment and commit the completed GPU,
    Metal, scripts, and documentation work.
