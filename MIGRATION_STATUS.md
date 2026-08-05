@@ -243,7 +243,6 @@ Current limitations:
   finite-difference step, integration resolution, K2 normalization, or the
   off-momentum closed orbit; the remaining off-momentum map convention needs
   investigation.
-- `scripts/compare_madx_twiss.jl` provides reusable MAD-X TFS comparison.
 - User documentation exists in `docs/src/io.md`.
 - `test/verify_io.jl` covers canonical PALS resolution, inline branches,
   inheritance/repetition, strict errors, round trips, duplicate names,

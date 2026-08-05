@@ -152,11 +152,9 @@ support complete `REFER`, `FROM`, `CALL`, macro, include, deferred-expression,
 table, or reversed-line behavior. Use MAD-X/cpymad or another complete parser
 to produce one ordered path for production models that require these features.
 
-A comparison helper for simple imported models is available:
-
-```bash
-julia --project=. scripts/compare_madx_twiss.jl model.madx model.twiss 80
-```
+For cross-code validation, read the MAD-X model with [`read_madx`](@ref), run
+the appropriate TrackPad optics API, and compare against externally generated
+MAD-X tables in the consumer or analysis package.
 
 ## API
 

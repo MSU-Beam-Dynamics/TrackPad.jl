@@ -20,6 +20,7 @@ test/tmp/
 data/
 outputs/
 plots/
+scripts/
 
 # Temporary files from editors and OS
 .DS_Store

@@ -374,10 +374,9 @@ lost = vec(any(x -> !isfinite(x), Array(coords); dims = 2))
 
 ### A100 Benchmark
 
-Run `scripts/benchmark_cpu_gpu.jl` with Julia threads enabled to compare the
-threaded element path, the flattened KernelAbstractions CPU path, one CUDA GPU,
-and a host-partitioned multi-GPU run. Compilation and input reset are excluded
-from device-resident timings.
+Benchmarks should compare the threaded element path, the flattened
+KernelAbstractions CPU path, one CUDA GPU, and a host-partitioned multi-GPU run.
+Compilation and input reset must be excluded from device-resident timings.
 
 The 2026-07-22 benchmark used 1,000,000 Float64 particles, 100 FODO elements,
 five samples, 64 Julia threads on two AMD EPYC 7313 sockets, and four NVIDIA
