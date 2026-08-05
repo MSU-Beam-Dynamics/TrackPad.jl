@@ -24,10 +24,12 @@ makedocs(
         "Home"        => "index.md",
         "User Guide"  => [
             "Getting Started" => "guide.md",
+            "Conventions"     => "conventions.md",
             "Elements"        => "elements.md",
             "File I/O"        => "io.md",
             "GPU Acceleration" => "gpu.md",
         ],
+        "AI Agent Guide" => "agent-guide.md",
         "API Reference" => "api.md",
     ],
     # Use :none during initial development; change to :exports once all

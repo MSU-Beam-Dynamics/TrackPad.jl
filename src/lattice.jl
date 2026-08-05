@@ -6,7 +6,7 @@ Lattice representation and high-level tracking functions for TrackPad.jl.
 
 using StaticArrays
 
-export Lattice, Beam, linepass!, ringpass!
+export Lattice, Beam, isperiodic, linepass!, ringpass!
 
 # =============================================================================
 # Beam Definition
@@ -38,14 +38,17 @@ struct Beam{T}
     beta::T        # v/c
 end
 
-# Physical constants
+"""Electron rest-mass energy in eV."""
 const M_ELECTRON = 0.51099895069e6  # eV (electron rest mass energy)
+
+"""Proton rest-mass energy in eV."""
 const M_PROTON = 938.27208816e6     # eV (proton rest mass energy)
 
 """
     Beam(energy; mass=M_ELECTRON, charge=-1.0)
 
-Construct a Beam with given energy.
+Construct a beam with reference kinetic energy `energy` in eV. `mass` is the
+rest-mass energy in eV and `charge` is signed in units of elementary charge.
 """
 function Beam(energy::T; mass::T=T(M_ELECTRON), charge::T=T(-1.0)) where T
     gamma = (energy + mass) / mass
@@ -65,13 +68,16 @@ Return 1/β for the beam (used in tracking for relativistic correction).
 # =============================================================================
 
 """
-    Lattice{T,E}
+    Lattice{E}
 
-A lattice is a sequence of accelerator elements.
+A lattice is an ordered sequence of accelerator elements with one of two
+boundary conditions: an open line (`periodic=false`) or a closed ring
+(`periodic=true`).
 
 # Fields
 - `elements::Vector{E}`: Vector of elements (all subtypes of AbstractElement)
 - `name::Symbol`: Optional lattice name
+- `periodic::Bool`: Whether the end of the lattice closes at its start
 
 # Example
 ```julia
@@ -81,21 +87,32 @@ q1 = Quadrupole(0.5, 0.5)
 q2 = Quadrupole(0.5, -0.5)
 
 # Build FODO cell
-fodo = Lattice([d1, q1, d1, q2])
+fodo = Lattice([d1, q1, d1, q2]; periodic=true)
 ```
 """
 struct Lattice{E<:AbstractElement}
     elements::Vector{E}
     name::Symbol
+    periodic::Bool
 end
 
-Lattice(elements::Vector{E}; name::Symbol=:LATTICE) where {E<:AbstractElement} = 
-    Lattice{E}(elements, name)
+Lattice(elements::Vector{E}; name::Symbol=:LATTICE, periodic::Bool=false) where {E<:AbstractElement} =
+    Lattice{E}(elements, name, periodic)
 
 # Allow construction from any iterable of elements
-function Lattice(elements; name::Symbol=:LATTICE)
+function Lattice(elements; name::Symbol=:LATTICE, periodic::Bool=false)
     elem_vec = collect(elements)
-    return Lattice(elem_vec; name=name)
+    return Lattice(elem_vec; name=name, periodic=periodic)
+end
+
+"""Return `true` when the lattice has periodic ring boundary conditions."""
+isperiodic(lat::Lattice) = lat.periodic
+
+@inline function _require_periodic(lat::Lattice, operation::AbstractString)
+    lat.periodic || throw(ArgumentError(
+        "$operation requires a periodic lattice; construct it with periodic=true",
+    ))
+    return nothing
 end
 
 Base.length(lat::Lattice) = length(lat.elements)
@@ -128,7 +145,7 @@ Use this before GPU adaptation so kernels only see concrete element structs.
 function materialize_lattice(lat::Lattice; time::Real=0.0, turn::Integer=0)
     ctx = TimeContext(Float64(time); turn=turn)
     elems = [materialize(elem, ctx) for elem in lat.elements]
-    return Lattice(elems; name=lat.name)
+    return Lattice(elems; name=lat.name, periodic=lat.periodic)
 end
 
 """
@@ -149,6 +166,7 @@ get_length(elem::Solenoid) = elem.L
 get_length(elem::Corrector) = elem.L
 get_length(elem::ExactSBend) = elem.L
 get_length(elem::Marker) = zero(Float64)
+get_length(elem::Patch) = zero(Float64)
 get_length(elem::DriftSC) = elem.L
 get_length(elem::QuadrupoleSC) = elem.L
 get_length(elem::SextupoleSC) = elem.L
@@ -225,6 +243,8 @@ Track a single particle for multiple turns through a ring lattice.
 """
 function ringpass(lat::Lattice, r::SVector{6,S}, beam::Beam{T}, nturns::Int;
                   time::Real=zero(T), dt_turn::Real=zero(T), turn::Integer=0) where {T,S}
+    _require_periodic(lat, "ringpass")
+    nturns >= 0 || throw(ArgumentError("nturns must be nonnegative"))
     t = T(time)
     dt = T(dt_turn)
     trn = Int(turn)
@@ -305,6 +325,8 @@ Track multiple particles for multiple turns through a ring (in-place).
 function ringpass!(coords::Matrix{T}, lat::Lattice, beam::Beam{T},
                    lost_flags::Vector{Int}, nturns::Int;
                    time::Real=zero(T), dt_turn::Real=zero(T), turn::Integer=0) where T
+    _require_periodic(lat, "ringpass!")
+    nturns >= 0 || throw(ArgumentError("nturns must be nonnegative"))
     t = T(time)
     dt = T(dt_turn)
     trn = Int(turn)

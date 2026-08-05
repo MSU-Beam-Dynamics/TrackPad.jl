@@ -2,6 +2,7 @@ using Test
 using TrackPad
 import JuTrack
 using LinearAlgebra
+using StaticArrays
 
 function with_jutrack_exact_beti(f::Function)
     old_exact_beti = JuTrack.use_exact_beti
@@ -20,8 +21,32 @@ D = Drift(1.0; name="D")
 QF = Quadrupole(0.5, 0.6; name="QF", num_int_steps=8)
 QD = Quadrupole(0.5, -0.6; name="QD", num_int_steps=8)
 
-ring = Lattice([D, QF, D, QD])
+ring = Lattice([D, QF, D, QD]; periodic=true)
 beam = Beam(3.0e9)
+
+@testset "Open line and periodic ring boundaries" begin
+    line = Lattice([D, QF])
+    @test !isperiodic(line)
+    @test isperiodic(ring)
+    @test size(transfer_map(line, beam)) == (6, 6)
+    entrance = optics4DUC(2.0, 0.1, 3.0, -0.2)
+    transported = transport_twiss(line, beam, entrance)
+    @test transported isa TransportTwissResult
+    @test length(transported.s) == length(line) + 1
+    @test transported.betax[1] == entrance.optics_x.beta
+    @test transported.betay[1] == entrance.optics_y.beta
+    @test periodic_twiss(ring, beam).tunex == twissline(ring, beam).tunex
+    @test_throws ArgumentError one_turn_map(line, beam)
+    @test_throws ArgumentError gettune(line, beam)
+    @test_throws ArgumentError getchrom(line, beam)
+    @test_throws ArgumentError twissline(line, beam)
+    @test_throws ArgumentError periodic_twiss(line, beam)
+    @test_throws ArgumentError find_closed_orbit_4d(line, beam)
+    @test_throws ArgumentError ringpass(
+        line, zero(SVector{6,Float64}), beam, 1,
+    )
+    @test isperiodic(materialize_lattice(ring))
+end
 
 ring_jt = [
     JuTrack.DRIFT(len=1.0),

@@ -18,7 +18,7 @@ end
 
 function run_cuda_case(::Type{T}) where T
     beam = Beam(T(3e9))
-    lat = Lattice(supported_gpu_elements(T, beam.energy))
+    lat = Lattice(supported_gpu_elements(T, beam.energy); periodic=true)
     coords0 = initial_coordinates(T, 4096)
     backend = CUDA.CUDABackend()
 

@@ -2,7 +2,7 @@
 CurrentModule = TrackPad
 ```
 
-# Getting Started
+# [Getting Started](@id user_guide)
 
 This guide walks through the typical workflow: building a beam and lattice,
 tracking particles, computing linear optics, and extracting TPSA transfer maps.
@@ -24,13 +24,15 @@ TrackPad uses the standard 6D phase-space vector
 | 5 | ``z`` | longitudinal position (``-c \Delta t``) [m] |
 | 6 | ``\delta`` | fractional momentum deviation ``(p - p_0)/p_0`` |
 
-Coordinates are stored as `StaticArrays.SVector{6, T}`.  The element type `T`
+Coordinates are stored as `StaticArrays.SVector{6,T}`. The element type `T`
 may be `Float64` for normal tracking or a `PolySeries.CTPS` type for TPSA maps.
+The complete normative definition is in
+[Physics and Data Conventions](@ref conventions).
 
 ## Beam
 
-The [`Beam`](@ref) struct carries the reference momentum and relativistic
-factors for all element pass functions.
+The [`Beam`](@ref TrackPad.Beam) struct carries the reference kinetic energy,
+rest-mass energy, signed charge, and relativistic factors. Energies are in eV.
 
 ```julia
 using TrackPad
@@ -53,11 +55,20 @@ Build a [`Lattice`](@ref) from any `Vector` of elements:
 using TrackPad
 
 d  = Drift(1.5)
-qf = Quadrupole(0.3;  k1 =  1.8, name = :QF)
-qd = Quadrupole(0.3;  k1 = -1.8, name = :QD)
+qf = Quadrupole(0.3,  1.8; name=:QF)
+qd = Quadrupole(0.3, -1.8; name=:QD)
 
-fodo = Lattice([qf, d, qd, d])
+fodo = Lattice(
+    AbstractElement[qf, d, qd, d];
+    name=:FODO,
+    periodic=true,
+)
 ```
+
+`Lattice(elements)` is an open line by default. Set `periodic=true` only when
+the end point is physically the same reference point as the start. Multi-turn
+tracking, tune, chromaticity, periodic Twiss, and closed-orbit APIs reject open
+lines.
 
 Standard collection operations work directly:
 
@@ -68,8 +79,8 @@ fodo[2]           # Drift element
 
 ## Single-Particle Tracking
 
-[`linepass`](@ref) is the allocation-free inner loop — it returns a new
-`SVector{6}` without heap allocation:
+[`linepass`](@ref) is the scalar tracking interface and returns a new
+`SVector{6}`:
 
 ```julia
 using TrackPad, StaticArrays
@@ -86,9 +97,9 @@ r100 = ringpass(fodo, r0, beam, 100)
 
 ### Lost Particles
 
-[`check_lost`](@ref) returns `true` when any coordinate is `NaN`.  Both
-`linepass` and `ringpass` propagate the NaN state automatically — no exception
-is thrown:
+[`check_lost`](@ref) checks NaN state and the current global transverse
+coordinate/momentum safety limits. Both `linepass` and `ringpass` stop at the
+first detected loss; no exception is thrown:
 
 ```julia
 r_lost = ringpass(fodo, r0, beam, 10_000)
@@ -101,7 +112,7 @@ For large ensembles use the in-place variants [`linepass!`](@ref) and
 [`ringpass!`](@ref), which operate on a pre-allocated matrix:
 
 ```julia
-using TrackPad
+using Random, TrackPad
 
 N     = 1000
 beam  = Beam(3.0e9)
@@ -152,13 +163,13 @@ one-turn map.
 
 Natural chromaticity via finite-difference tune variation with momentum.
 
-### Twiss Along a Line
+### Periodic Ring Twiss
 
-[`twissline`](@ref) propagates Courant–Snyder parameters through each element
-and returns a [`TwissLineResult`](@ref):
+[`periodic_twiss`](@ref) solves the periodic entrance condition, propagates it
+through each element, and returns a [`TwissLineResult`](@ref):
 
 ```julia
-tw = twissline(fodo, beam)
+tw = periodic_twiss(fodo, beam)
 
 println("Qx = ", tw.tunex)
 println("max βx = ", maximum(tw.betax), " m")
@@ -172,13 +183,21 @@ println("max βx = ", maximum(tw.betax), " m")
 | `mux`, `muy` | accumulated betatron phase [rad] |
 | `tunex`, `tuney` | total phase advance / 2π |
 
-### Periodic Solution
+The older `twissline(fodo, beam)` spelling remains compatible. The `twissring`
+overloads are JuTrack-style interfaces accepting momentum offset and order.
 
-[`twissring`](@ref) finds the self-consistent Courant–Snyder solution:
+### Open-Line Twiss
+
+An open line has no periodic entrance solution. Supply entrance Twiss values:
 
 ```julia
-twiss = twissring(fodo, beam)
+line = Lattice(AbstractElement[qf, d, qd])
+entrance = optics4DUC(12.0, -0.4, 8.0, 0.2)
+tw = transport_twiss(line, beam, entrance)
 ```
+
+The result contains boundary positions, beta, alpha, and accumulated phase,
+but no tune.
 
 ### Closed Orbit
 
@@ -193,6 +212,14 @@ co = find_closed_orbit_4d(fodo, beam; dp = 1e-3)  # 4D at fixed δ
 M = one_turn_map(fodo, beam)   # 6×6 finite-difference Jacobian
 ```
 
+For an open line, use the same finite-difference machinery without a closure
+assumption:
+
+```julia
+line = Lattice(AbstractElement[qf, d, qd])
+Mline = transfer_map(line, beam)
+```
+
 ## TPSA Transfer Maps
 
 TrackPad supports Truncated Power Series Algebra via the
@@ -203,11 +230,11 @@ Load `PolySeries` after `TrackPad` to activate it:
 using TrackPad, PolySeries
 
 ring = Lattice([
-    Quadrupole(0.3;  k1 =  1.8),
+    Quadrupole(0.3, 1.8),
     Drift(1.5),
-    Quadrupole(0.3;  k1 = -1.8),
+    Quadrupole(0.3, -1.8),
     Drift(1.5),
-])
+]; periodic=true)
 beam = Beam(3.0e9)
 
 # Second-order one-turn map
@@ -235,16 +262,20 @@ using TrackPad
 
 # Quadrupole whose k1 ramps linearly with turn number
 k1_ramp(ctx) = 1.2 * (1 + 0.01 * ctx.turn)
-qf_tv = timed(qf; k1 = TimeFunction(k1_ramp))
+qf_tv = timed(qf; k1=k1_ramp)
 
 # Build a lattice with the time-varying element
-ring_tv = Lattice([qf_tv, d, qd, d])
+ring_tv = Lattice([qf_tv, d, qd, d]; periodic=true)
 
 # Snapshot at turn 50 → plain Quadrupole with k1 = 1.2 * 1.50
 lat50 = materialize_lattice(ring_tv; turn = 50)
 ```
 
 See [API Reference — Time Dependence](@ref time_dependence) for the full API.
+
+!!! warning "GPU materialization"
+    `TimeVaryingElement` stores host closures. Call `materialize_lattice` for a
+    specific time/turn before constructing a `GPULattice`.
 
 ## Lattice Utilities
 
@@ -253,3 +284,21 @@ total_length(fodo)            # total arc length [m]
 spos(fodo)                    # s-positions at each element boundary
 findelem(fodo, :QF)           # indices of elements named :QF
 ```
+
+## Common Failure Modes
+
+| Symptom | Likely cause | Action |
+|---------|--------------|--------|
+| `MethodError` constructing a multipole | Strength supplied as a keyword | Use `Quadrupole(L, k1)`, `Sextupole(L, k2)`, or `Octupole(L, k3)` |
+| RF cavity produces no kick | Direct cavity has `energy=0` | Set `energy=beam.energy` and `charge=beam.charge` |
+| GPU packing throws `ArgumentError` | Element or setting is unsupported | Keep that model on CPU or implement/test exact GPU support; do not remove physics silently |
+| `JuTrack`/`PolySeries` missing in tests | `test/runtests.jl` was run directly | Use `julia --project=. -e 'using Pkg; Pkg.test()'` |
+| Cross-code chromaticity differs | Convention/step/reference mismatch | Record `h`, `dpp`, centered mode, closed-orbit mode, RF state, and bend geometry |
+| Metal type error | Metal does not support `Float64` kernels | Use `Float32` on Metal or `Float64` CPU/CUDA |
+
+## Next Steps
+
+- [Elements](@ref elements_guide): constructors and model categories
+- [Lattice File I/O](@ref io_guide): PALS and MAD-X
+- [GPU Acceleration](@ref gpu_guide): batch tracking and derivatives
+- [Agent Guide](@ref agent_guide): explicit API and array-shape contract

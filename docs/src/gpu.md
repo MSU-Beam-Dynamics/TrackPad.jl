@@ -2,7 +2,7 @@
 CurrentModule = TrackPad
 ```
 
-# GPU Acceleration
+# [GPU Acceleration](@id gpu_guide)
 
 TrackPad.jl supports GPU-accelerated particle tracking via
 [KernelAbstractions.jl](https://github.com/JuliaGPU/KernelAbstractions.jl),
@@ -14,7 +14,7 @@ which provides a single backend-agnostic kernel language that compiles to:
 | NVIDIA CUDA | `CUDA.jl` | Float32 or Float64 |
 | CPU (multi-core) | *(built-in)* | Float32 or Float64 |
 
-Three use cases are supported:
+Four use cases are supported:
 
 1. **Multi-particle batch tracking** — N particles tracked in parallel through the same lattice.
 2. **Parameter sweep** — one (or N) particle(s) tracked through N different lattice configurations simultaneously.
@@ -36,7 +36,8 @@ using TrackPad, Metal
 using TrackPad, CUDA
 ```
 
-No extra configuration is needed.  The extensions are activated automatically.
+Install the backend package in the active environment, then load it with
+TrackPad. The corresponding extension activates automatically.
 
 ---
 
@@ -51,6 +52,7 @@ matrices:
 - `fparams :: Matrix{T}` — float parameters, shape `(18, n_elems)`
 - `iparams :: Matrix{Int32}` — integer parameters (e.g. integration steps), shape `(2, n_elems)`
 - `elem_types :: Vector{Int32}` — element type codes
+- `periodic :: Bool` — source lattice boundary for repeated-pass validation
 
 The `T` type parameter controls precision.  Use `Float32` for Metal or
 `Float64` for CUDA/CPU.
@@ -81,7 +83,7 @@ Track N particles through the same lattice, one GPU thread per particle.
 using TrackPad, Metal, StaticArrays
 
 beam = Beam(18e9)
-lat  = read_madx("ring.madx")   # or build manually
+lat, beam = read_madx("ring.madx"; periodic=true)   # or build manually
 
 # Build GPULattice and upload to Metal device
 gl = gpu_adapt(lat, beam, MetalBackend())
@@ -99,7 +101,7 @@ batch_ringpass!(coords, gl, 1000)
 
 # Copy results back to CPU
 result = Array(coords)
-lost   = vec(any(isnan, result, dims = 2))   # Bool vector: lost particles
+lost   = vec(any(x -> !isfinite(x), result; dims = 2))
 println(count(lost), " / $N particles lost")
 ```
 
@@ -146,9 +148,9 @@ using TrackPad, Metal
 
 beam = Beam(18e9)
 lat  = Lattice([
-    Quadrupole(0.5; k1 =  1.2, name = :QF, num_int_steps = 4),
+    Quadrupole(0.5, 1.2; name=:QF, num_int_steps=4),
     Drift(1.0),
-    Quadrupole(0.5; k1 = -1.2, name = :QD, num_int_steps = 4),
+    Quadrupole(0.5, -1.2; name=:QD, num_int_steps=4),
     Drift(1.0),
 ])
 
@@ -178,6 +180,7 @@ ps = ParamSweepLattice(gl, [(qf_idx, 2, k1_vals)])
 | `RFCavity` | 2 | `volt` (eV) |
 | `RFCavity` | 3 | `freq` (Hz) |
 | `RFCavity` | 4 | `lag` (m) |
+| `RFCavity` | 8 | reference-particle `charge` (e) |
 | `Corrector` | 2 | `xkick` (rad) |
 | `Corrector` | 3 | `ykick` (rad) |
 | `Solenoid` | 2 | `ks` |
@@ -252,14 +255,15 @@ using TrackPad
 
 beam   = Beam(3.0e9)
 lat    = Lattice([...])
+ring   = Lattice([...]; periodic=true)
 N      = 10_000
 coords = zeros(Float64, N, 6)
 # ... fill ...
 
 # Requires Julia to be started with multiple threads:
 #   julia --project=. -t 8 myscript.jl
-cpu_batch_linepass!(coords, lat, beam)          # 1 turn
-cpu_batch_linepass!(coords, lat, beam, 100)     # 100 turns
+cpu_batch_linepass!(coords, lat, beam)          # one pass
+cpu_batch_linepass!(coords, ring, beam, 100)    # repeated periodic passes
 ```
 
 ---
@@ -293,7 +297,7 @@ particle, or approximately 275 MiB for one million particles.
 ### Hessian-vector products
 
 For a direction vector `v[p, :]`, `batch_hessian_vector_product!` returns
-`H[p, output, :, :] * v[p, :]`:
+the Hessian contracted with `v[p, :]` along its final input axis:
 
 ```julia
 vectors = CUDA.randn(Float64, N, 6)
@@ -349,8 +353,8 @@ If higher precision is needed on Apple hardware, use the CPU backend
 
 ### CUDA
 
-Tests on an NVIDIA A100 measured maximum CPU/CUDA differences below `2e-16`
-for Float64 and below `2.3e-7` for Float32 over the verification lattice.
+Tests on an NVIDIA A100 measured maximum CPU/CUDA differences below `2.5e-16`
+for Float64 and below `2.4e-7` for Float32 over the verification lattice.
 Exact bitwise equality is not required because GPU fused operations can differ
 from CPU evaluation.
 
@@ -361,7 +365,7 @@ On GPU, lost particles accumulate `Inf` or `NaN` coordinates that propagate
 naturally through subsequent elements.  Check for lost particles with:
 
 ```julia
-lost = vec(any(isnan, Array(coords), dims = 2))
+lost = vec(any(x -> !isfinite(x), Array(coords); dims = 2))
 ```
 
 ---
@@ -395,8 +399,9 @@ than peak dedicated-node results.
 - **Workgroup size**: the default workgroup size is 256 threads.  For small
   particle counts (< 512) you may want to call the kernel directly with a
   smaller workgroup size.
-- **Multiple turns**: call `batch_ringpass!(coords, gl, nturns)` rather than
-  looping in Julia; this avoids Julia overhead between turns.
+- **Multiple turns**: use `batch_ringpass!(coords, gl, nturns)` to make ring
+  intent explicit. The current implementation launches one fused-lattice
+  kernel per turn.
 - **Memory layout**: coordinates are stored in Julia column-major `N×6`
   matrices, so adjacent particle threads access contiguous values for each
   coordinate component.
@@ -410,11 +415,11 @@ than peak dedicated-node results.
 
 ---
 
-## Known Limitations
+## [Known Limitations](@id gpu_limitations)
 
 | Feature | Status |
 |---------|--------|
-| Supported elements | `Marker`, `Drift`, `Quadrupole`, `Sextupole`, `Octupole`, `SBend`, `RFCavity`, `Corrector`, `Solenoid`, `ThinMultipole` |
+| Supported elements | `Marker`, `Patch`, `Drift`, `Quadrupole`, `Sextupole`, `Octupole`, `SBend`, `RFCavity`, `Corrector`, `Solenoid`, `ThinMultipole` |
 | `ExactSBend` / `LBend` on GPU | Rejected with `ArgumentError` |
 | TPSA power-series tracking on GPU | Not yet implemented |
 | Space charge / `BeamBeam` / `Wake` / `Wiggler` | Rejected with `ArgumentError` |

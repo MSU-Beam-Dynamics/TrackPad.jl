@@ -1,0 +1,81 @@
+# TrackPad.jl
+
+> General Julia library for accelerator tracking, optics, PALS/MAD-X
+> interchange, optional GPU batches, Enzyme derivatives, and PolySeries TPSA.
+
+## Canonical documentation
+
+- Human quick start: README.md
+- Workflow guide: docs/src/guide.md
+- Normative conventions: docs/src/conventions.md
+- Element constructors: docs/src/elements.md
+- File interchange: docs/src/io.md
+- GPU and derivatives: docs/src/gpu.md
+- Agent API contract: docs/src/agent-guide.md
+- Repository change rules: AGENTS.md
+- Generated API reference: docs/src/api.md
+
+## Core contract
+
+- Julia >= 1.10.
+- Coordinate order: (x, px, y, py, z, delta).
+- Coordinates use metres and normalized momenta.
+- Beam(energy) takes kinetic energy in eV.
+- Scalar CPU tracking is the behavioral reference.
+- Public APIs use typed Julia values; do not depend on consumer wrappers.
+- Lattice(elements) is open; use periodic=true only for a closed ring.
+- Unsupported GPU physics is rejected while constructing GPULattice.
+- In-memory PALS envelope: schema `trackpad.pals.branch`, version 1.
+
+## Task to API
+
+- Single particle line: linepass(lattice, SVector{6}, beam)
+- Single particle ring: ringpass(lattice, SVector{6}, beam, turns)
+- CPU particle matrix: linepass!, ringpass!, cpu_batch_linepass!
+- Packed CPU/GPU matrix: GPULattice, gpu_adapt, batch_linepass!
+- Parameter sweep: ParamSweepLattice, param_sweep_linepass!
+- Tunes/chromaticity: gettune, getchrom
+- Twiss: transport_twiss for supplied line entrance; periodic_twiss for a ring
+- Maps: transfer_map for either boundary; one_turn_map for a ring
+- Closed orbit: find_closed_orbit_4d, find_closed_orbit_6d
+- PALS subset: read_pals, write_pals
+- MAD-X subset: read_madx
+- Derivatives: batch_jacobian!, batch_hessian_vector_product!, batch_hessian!
+- TPSA: tpsa_map after loading PolySeries
+
+## Constructor signatures
+
+- Drift(L; kwargs...)
+- Quadrupole(L, k1; kwargs...)
+- Sextupole(L, k2; kwargs...)
+- Octupole(L, k3; kwargs...)
+- SBend(L, angle, e1=0, e2=0; kwargs...)
+- RBend(L, angle; kwargs...)
+- RFCavity(L, volt, freq, lag=0; energy, charge, kwargs...)
+- Corrector(L, hkick, vkick; kwargs...)
+- Solenoid(L, ks; kwargs...)
+
+## Important semantics
+
+- delta = (p - p0) / p0.
+- z is path-length/time coordinate in metres, approximately -c*Delta_t.
+- Sextupole k2 and octupole k3 are not pre-divided by factorials.
+- RF phase = 2*pi*freq*(z-lag)/c - philag.
+- Direct RFCavity default energy is zero, which disables its kick.
+- `check_lost` also checks transverse coordinate/momentum limits, not only NaN.
+- `twissline` computes an uncoupled periodic solution using finite differences.
+
+## Optional backends
+
+- Metal: Float32 only.
+- CUDA: Float32 and Float64.
+- Enzyme: batched Jacobian; second derivatives use finite differences of
+  Enzyme Jacobians in the current implementation.
+- PolySeries: optional TPSA extension.
+
+## Boundaries
+
+Do not invent support for coupled optics, unsupported GPU elements, full MAD-X
+language semantics, or exact nested-Enzyme GPU Hessians. Check the relevant
+guide and current source before answering. Application topology, engine policy,
+serialization, sessions, and UI belong to consumer adapters.

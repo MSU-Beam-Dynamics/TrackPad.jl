@@ -34,7 +34,7 @@ const k1  = 1.5
 QF = Quadrupole(L_q,  k1; num_int_steps=10)
 QD = Quadrupole(L_q, -k1; num_int_steps=10)
 D  = Drift(L_d)
-ring = Lattice([QF, D, QD, D])
+ring = Lattice([QF, D, QD, D]; periodic=true)
 beam = Beam(3.0e9)
 
 # JuTrack lattice (KQUAD matches TrackPad Quadrupole; same NumIntSteps)

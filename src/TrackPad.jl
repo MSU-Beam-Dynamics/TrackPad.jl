@@ -39,13 +39,13 @@ include("tpsa.jl")
 # Lattice I/O: PALS YAML and MAD-X readers/writers
 include("io.jl")
 
-# GPU-accelerated tracking (KernelAbstractions — Metal / CUDA / ROCm / CPU)
+# GPU-accelerated tracking (KernelAbstractions - Metal / CUDA / CPU)
 include("gpu.jl")
 
 # Re-export key symbols
 export AbstractElement, AbstractMagnet, AbstractDrift, AbstractCavity
 export AbstractTransferMap, AbstractTransverseMap, AbstractLongitudinalRFMap
-export Marker, Drift, Quadrupole, Sextupole, Octupole
+export Marker, Patch, Drift, Quadrupole, Sextupole, Octupole
 export SBend, RFCavity, ThinMultipole, Solenoid, Corrector
 export DriftSC, QuadrupoleSC, SextupoleSC, OctupoleSC, SBendSC
 export RBend, RBendSC, ERBend, LBend
@@ -59,13 +59,14 @@ export TimeContext, TimeFunction, TimeDependentParam, Time, RealTime, Turn
 export teval, time_lower, static_timecheck
 export TimeVaryingElement, timed, materialize
 
-export Beam, Lattice
+export Beam, Lattice, isperiodic
 export pass!, linepass, linepass!, ringpass, ringpass!
 export total_length, spos, findelem, get_length, materialize_lattice
 export AbstractOptics, AbstractOptics2D, AbstractOptics4D, optics2D, optics4DUC
-export TwissLineResult, one_turn_map, findm66, fastfindm66, findm66_refpts, fastfindm66_refpts
+export TwissLineResult, TransportTwissResult
+export transfer_map, one_turn_map, findm66, fastfindm66, findm66_refpts, fastfindm66_refpts
 export twissPropagate, periodicEdwardsTengTwiss, twissring
-export gettune, getchrom, twissline
+export gettune, getchrom, periodic_twiss, transport_twiss, twissline
 export find_closed_orbit_4d, find_closed_orbit_6d
 export check_lost, drift6, strthinkick, symplectic4_pass
 export tpsa_map

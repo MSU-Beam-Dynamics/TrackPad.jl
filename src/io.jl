@@ -10,8 +10,6 @@ Lattice I/O utilities for TrackPad.jl:
 
 import YAML
 
-export PALSResolvedElement, PALSResolvedBranch
-export CompiledBranch, resolve_pals, resolve_pals_full, compile_branch
 export read_pals, read_madx, write_pals
 
 const _C_IO = 2.99792458e8  # m/s
@@ -20,25 +18,17 @@ const _C_IO = 2.99792458e8  # m/s
 # ==================  PALS YAML Reader  ======================
 # ============================================================
 
-"""
-One occurrence of an element in a resolved PALS branch.
-
-`name` is the occurrence name, `source_name` is the inherited prototype name,
-and `occurrence` disambiguates repeated uses without changing PALS names.
-"""
+"""One ordered element definition in a selected PALS path."""
 struct PALSResolvedElement
     name::String
-    source_name::String
-    occurrence::Int
     definition::Dict{String,Any}
 end
 
 """
-A single PALS branch resolved into an ordered, occurrence-specific element list.
+A single PALS branch resolved into an ordered element list.
 
-This is the interchange boundary used by EICViBE-style machine management:
-topology remains outside TrackPad, while one selected tracking path is compiled
-into a flat executable lattice.
+Topology remains outside TrackPad; one selected tracking path is compiled into
+a flat executable lattice.
 """
 struct PALSResolvedBranch
     lattice_name::String
@@ -46,21 +36,6 @@ struct PALSResolvedBranch
     periodic::Bool
     elements::Vector{PALSResolvedElement}
     reference::Dict{String,Any}
-end
-
-"""
-An executable TrackPad branch plus its source-occurrence index.
-
-`source_index[(name, occurrence)]` maps an EICViBE/PALS occurrence to its
-one-based TrackPad lattice index. Metadata-only `BeginningEle` and
-`Placeholder` occurrences are intentionally absent from the index.
-"""
-struct CompiledBranch
-    lattice::Lattice
-    beam::Beam
-    branch_name::String
-    periodic::Bool
-    source_index::Dict{Tuple{String,Int},Int}
 end
 
 mutable struct _PALSDocument
@@ -154,14 +129,14 @@ function _pals_resolve_element_definition(name, doc::_PALSDocument;
         parent = string(inherit)
         haskey(doc.elements, parent) ||
             throw(ArgumentError("PALS element '$name' inherits unknown element '$parent'"))
-        base, _ = _pals_resolve_element_definition(parent, doc; stack=[stack; name])
+        base = _pals_resolve_element_definition(parent, doc; stack=[stack; name])
         delete!(local_definition, "inherit")
         delete!(merged_override, "inherit")
-        return _pals_deepmerge(_pals_deepmerge(base, local_definition), merged_override), parent
+        return _pals_deepmerge(_pals_deepmerge(base, local_definition), merged_override)
     end
     isempty(local_definition) && !haskey(merged_override, "kind") &&
         throw(ArgumentError("Unknown PALS element '$name'"))
-    return _pals_deepmerge(local_definition, merged_override), name
+    return _pals_deepmerge(local_definition, merged_override)
 end
 
 function _pals_branch_specs(lattice_name::String, lattice_def::Dict{String,Any})
@@ -237,7 +212,7 @@ function _pals_choose_root(doc::_PALSDocument, lattice, branch, sequence)
     return lattice_name, branch_name, branch_def
 end
 
-function _pals_expand_item!(result, item, doc, counts, strict, stack)
+function _pals_expand_item!(result, item, doc, strict, stack)
     name, override = if item isa AbstractString
         string(item), Dict{String,Any}()
     elseif item isa AbstractDict && length(item) == 1
@@ -269,26 +244,20 @@ function _pals_expand_item!(result, item, doc, counts, strict, stack)
         line isa AbstractVector ||
             throw(ArgumentError("PALS BeamLine '$name' line must be a list"))
         for child in line
-            _pals_expand_item!(expanded, child, doc, counts, strict, [stack; name])
+            _pals_expand_item!(expanded, child, doc, strict, [stack; name])
         end
         direction == -1 && reverse!(expanded)
     else
-        definition, source_name = _pals_resolve_element_definition(name, doc; override=override)
-        push!(expanded, PALSResolvedElement(name, source_name, 0, definition))
+        definition = _pals_resolve_element_definition(name, doc; override=override)
+        push!(expanded, PALSResolvedElement(name, definition))
     end
 
     copies = abs(repeat_count)
     repeat_count < 0 && reverse!(expanded)
-    for copy_index in 1:copies
+    for _ in 1:copies
         for element in expanded
-            if is_line && copy_index == 1
-                push!(result, element)
-                continue
-            end
-            occurrence = get(counts, element.name, 0) + 1
-            counts[element.name] = occurrence
             push!(result, PALSResolvedElement(
-                element.name, element.source_name, occurrence, deepcopy(element.definition),
+                element.name, deepcopy(element.definition),
             ))
         end
     end
@@ -307,11 +276,9 @@ end
     resolve_pals(filename; lattice=nothing, branch=nothing, sequence=nothing,
                  strict=true) -> PALSResolvedBranch
 
-Resolve one PALS lattice branch into an ordered list of occurrence-specific
-definitions. This built-in resolver supports nested BeamLines, `repeat`, inline
-definitions, inheritance, `use`, and branch selection. Full PALS expansion
-(controllers, expressions, forks, and reference/floor bookkeeping) should be
-performed by PALSJulia before calling TrackPad.
+Resolve one PALS lattice branch into an ordered list of element definitions.
+This built-in resolver supports nested BeamLines, `repeat`, inline
+definitions, inheritance, `use`, and branch selection.
 """
 function resolve_pals(data::AbstractDict;
                       lattice::Union{String,Symbol,Nothing}=nothing,
@@ -325,9 +292,8 @@ function resolve_pals(data::AbstractDict;
     line isa AbstractVector ||
         throw(ArgumentError("PALS branch '$branch_name' line must be a list"))
     elements = PALSResolvedElement[]
-    counts = Dict{String,Int}()
     for item in line
-        _pals_expand_item!(elements, item, doc, counts, strict, String[])
+        _pals_expand_item!(elements, item, doc, strict, String[])
     end
     periodic = Bool(get(branch_def, "periodic", false))
     return PALSResolvedBranch(
@@ -340,14 +306,6 @@ function resolve_pals(filename::AbstractString; kwargs...)
     data isa AbstractDict || throw(ArgumentError("PALS document root must be a mapping"))
     return resolve_pals(data; kwargs...)
 end
-
-"""
-    resolve_pals_full(filename; kwargs...) -> PALSResolvedBranch
-
-Parse and fully expand a PALS file with PALSJulia. This method is supplied by
-the optional `TrackPadPALSJuliaExt` extension when PALSJulia is loaded.
-"""
-function resolve_pals_full end
 
 function _pals_species_defaults(species)
     key = lowercase(replace(string(species), "_" => "", "-" => ""))
@@ -399,88 +357,37 @@ function read_pals(filename::AbstractString;
                    charge::Union{Real,Nothing}=nothing,
                    strict::Bool=true)
     resolved = resolve_pals(
-        filename; lattice=lattice, branch=branch, sequence=sequence, strict=strict,
+        filename;
+        lattice=lattice, branch=branch, sequence=sequence, strict=strict,
     )
-    compiled = compile_branch(
+    return _compile_pals(
         resolved;
         beam_energy=beam_energy, mass=mass, charge=charge, strict=strict,
     )
-    return compiled.lattice, compiled.beam
 end
 
-"""
-    compile_branch(resolved::PALSResolvedBranch; kwargs...) -> CompiledBranch
-
-Compile a resolved PALS/EICViBE branch into TrackPad's flat executable lattice
-while retaining an occurrence-to-index map for diagnostics and live updates.
-"""
-function compile_branch(resolved::PALSResolvedBranch;
-                        beam_energy::Union{Real,Nothing}=nothing,
-                        mass::Union{Real,Nothing}=nothing,
-                        charge::Union{Real,Nothing}=nothing,
-                        strict::Bool=true)
+function _compile_pals(resolved::PALSResolvedBranch;
+                       beam_energy::Union{Real,Nothing}=nothing,
+                       mass::Union{Real,Nothing}=nothing,
+                       charge::Union{Real,Nothing}=nothing,
+                       strict::Bool=true)
     beam = _pals_beam(
         resolved.reference; beam_energy=beam_energy, mass=mass, charge=charge,
     )
     elements = AbstractElement[]
-    source_index = Dict{Tuple{String,Int},Int}()
     for occurrence in resolved.elements
         kind = uppercase(string(get(occurrence.definition, "kind", "DRIFT")))
-        kind in ("BEGINNINGELE", "PLACEHOLDER") && continue
+        kind in ("BEGINNINGELE", "FORK", "PLACEHOLDER") && continue
         push!(elements, _pals_build_element(
             occurrence.name, occurrence.definition;
-            strict=strict, beam_energy=beam.energy,
+            strict=strict, beam_energy=beam.energy, beam_charge=beam.charge,
         ))
-        source_index[(occurrence.name, occurrence.occurrence)] = length(elements)
     end
     name = isempty(resolved.lattice_name) ? resolved.name : resolved.lattice_name
-    lattice = Lattice(elements; name=Symbol(name))
-    return CompiledBranch(
-        lattice, beam, resolved.name, resolved.periodic, source_index,
+    lattice = Lattice(
+        elements; name=Symbol(name), periodic=resolved.periodic,
     )
-end
-
-"""
-    compile_branch(elements; machine_name="machine", branch_name="main",
-                   periodic=false, reference=Dict(), strict=true)
-
-Compile an in-memory EICViBE-style element list. Each entry must be a mapping
-with a `name` field and the same canonical `kind`, `length`, and parameter-group
-fields used by PALS. This is the intended JuliaCall boundary for EICViBE.
-"""
-function compile_branch(elements::AbstractVector;
-                        machine_name::Union{String,Symbol}="machine",
-                        branch_name::Union{String,Symbol}="main",
-                        periodic::Bool=false,
-                        reference::AbstractDict=Dict{String,Any}(),
-                        beam_energy::Union{Real,Nothing}=nothing,
-                        mass::Union{Real,Nothing}=nothing,
-                        charge::Union{Real,Nothing}=nothing,
-                        strict::Bool=true)
-    counts = Dict{String,Int}()
-    occurrences = PALSResolvedElement[]
-    for raw in elements
-        raw isa AbstractDict ||
-            throw(ArgumentError("Interchange elements must be mappings"))
-        definition = _pals_dict(raw)
-        haskey(definition, "name") ||
-            throw(ArgumentError("Interchange element is missing its name"))
-        name = string(pop!(definition, "name"))
-        source_name = string(pop!(definition, "source_name", name))
-        occurrence = get(counts, name, 0) + 1
-        counts[name] = occurrence
-        push!(occurrences, PALSResolvedElement(
-            name, source_name, occurrence, definition,
-        ))
-    end
-    resolved = PALSResolvedBranch(
-        string(machine_name), string(branch_name), periodic,
-        occurrences, _pals_dict(reference),
-    )
-    return compile_branch(
-        resolved;
-        beam_energy=beam_energy, mass=mass, charge=charge, strict=strict,
-    )
+    return lattice, beam
 end
 
 _pals_get(d, names...; default=0.0) =
@@ -519,7 +426,8 @@ function _pals_bend_length(d, bp)
 end
 
 function _pals_build_element(name::String, d::Dict;
-                             strict::Bool=true, beam_energy::Real=1.0e9)
+                             strict::Bool=true, beam_energy::Real=1.0e9,
+                             beam_charge::Real=1.0)
     kind = string(get(d, "kind", "Drift"))
     bp   = get(d, "BendP", Dict{String,Any}())
     len  = uppercase(kind) in ("BEND", "SBEND", "RBEND") ?
@@ -529,12 +437,24 @@ function _pals_build_element(name::String, d::Dict;
     solp = get(d, "SolenoidP",         Dict{String,Any}())
     kp   = get(d, "KickerP",           Dict{String,Any}())
     bbp  = get(d, "BeamBeamP",         Dict{String,Any}())
+    pp   = get(d, "PatchP",            Dict{String,Any}())
     k = uppercase(kind)
 
     if k == "DRIFT"
         return Drift(len; name=Symbol(name))
     elseif k in ("MARKER", "INSTRUMENT", "MONITOR")
         return Marker(; name=Symbol(name))
+    elseif k == "PATCH"
+        return Patch(
+            name=Symbol(name),
+            x_offset=Float64(get(pp, "x_offset", 0.0)),
+            y_offset=Float64(get(pp, "y_offset", 0.0)),
+            z_offset=Float64(get(pp, "z_offset", 0.0)),
+            x_pitch=Float64(get(pp, "x_pitch", 0.0)),
+            y_pitch=Float64(get(pp, "y_pitch", 0.0)),
+            tilt=Float64(get(pp, "tilt", 0.0)),
+            t_offset=Float64(get(pp, "t_offset", 0.0)),
+        )
     elseif k == "QUADRUPOLE"
         k1  = _pals_strength(mmp, 1, len)
         k1s = _pals_strength(mmp, 1, len; skew=true)
@@ -563,7 +483,8 @@ function _pals_build_element(name::String, d::Dict;
         pa    = k1s != 0 ? [0.0, k1s, 0.0, 0.0] : nothing
         return SBend(len, angle, e1, e2; name=Symbol(name),
                      fint1=fint1, fint2=fint2, gap=2*hgap,
-                     polynom_a=pa, polynom_b=pb)
+                     polynom_a=pa, polynom_b=pb,
+                     max_order=(k1 != 0 || k1s != 0) ? 1 : 0)
     elseif k == "RBEND"
         angle = Float64(get(bp, "angle_ref", 0.0))
         e1    = Float64(get(bp, "e1",        0.0))
@@ -571,8 +492,14 @@ function _pals_build_element(name::String, d::Dict;
         fint1 = Float64(get(bp, "edge1_int", 0.0))
         fint2 = Float64(get(bp, "edge2_int", fint1))
         hgap  = Float64(get(bp, "hgap",      0.0))
+        k1    = _pals_strength(mmp, 1, len)
+        k1s   = _pals_strength(mmp, 1, len; skew=true)
+        pb    = k1 != 0 ? [0.0, k1, 0.0, 0.0] : nothing
+        pa    = k1s != 0 ? [0.0, k1s, 0.0, 0.0] : nothing
         return RBend(len, angle; name=Symbol(name),
-                     fint1=fint1, fint2=fint2, gap=2*hgap)
+                     fint1=fint1, fint2=fint2, gap=2*hgap,
+                     polynom_a=pa, polynom_b=pb,
+                     max_order=(k1 != 0 || k1s != 0) ? 1 : 0)
     elseif k == "RFCAVITY"
         volt  = Float64(get(rfp, "voltage",   0.0))
         freq  = Float64(get(rfp, "frequency", 0.0))
@@ -582,6 +509,7 @@ function _pals_build_element(name::String, d::Dict;
         return RFCavity(
             len, volt, freq, lag;
             name=Symbol(name), h=h, energy=Float64(beam_energy),
+            charge=Float64(beam_charge),
         )
     elseif k == "CRABCAVITY"
         volt  = Float64(get(rfp, "voltage",   0.0))
@@ -632,7 +560,7 @@ end
 """
     read_madx(filename; sequence=nothing, beam_energy=nothing,
               mass=nothing, charge=nothing, num_int_steps=10,
-              strict=true) -> (Lattice, Beam)
+              strict=true, periodic=nothing) -> (Lattice, Beam)
 
 Read a MAD-X lattice file (`.seq`, `.mad`, `.madx`) and return a `(Lattice, Beam)` pair.
 
@@ -657,7 +585,8 @@ function read_madx(filename::AbstractString;
                    mass::Union{Real,Nothing} = nothing,
                    charge::Union{Real,Nothing} = nothing,
                    num_int_steps::Int = 10,
-                   strict::Bool = true)
+                   strict::Bool = true,
+                   periodic::Union{Bool,Nothing} = nothing)
     num_int_steps > 0 ||
         throw(ArgumentError("num_int_steps must be positive"))
     text = read(filename, String)
@@ -678,10 +607,12 @@ function read_madx(filename::AbstractString;
     line_defs  = Dict{String,Vector{Tuple{Int,String}}}()  # LINE name → [(n,elem)]
     sequences  = Dict{String,Vector{_MADXPlacement}}()     # SEQUENCE name → placements
     use_period = Ref{String}("")
+    use_is_periodic = Ref(false)
     beam_info = Dict{String,Any}()
 
     _madx_parse!(
-        tokens, vars, type_defs, line_defs, sequences, use_period, beam_info,
+        tokens, vars, type_defs, line_defs, sequences, use_period,
+        use_is_periodic, beam_info,
     )
 
     # Choose root sequence / line
@@ -721,12 +652,15 @@ function read_madx(filename::AbstractString;
         end
         push!(elements, _madx_build_element(
             n, type_defs[n], type_defs;
-            strict=strict, beam_energy=beam.energy,
+            strict=strict, beam_energy=beam.energy, beam_charge=beam.charge,
             num_int_steps=num_int_steps,
         ))
     end
 
-    lat  = Lattice(elements; name = Symbol(seq_name))
+    ring_boundary = periodic === nothing ? use_is_periodic[] : periodic
+    lat = Lattice(
+        elements; name=Symbol(seq_name), periodic=ring_boundary,
+    )
     return lat, beam
 end
 
@@ -861,7 +795,7 @@ function _madx_consume_until_semi!(s)
 end
 
 function _madx_parse!(tokens, vars, type_defs, line_defs, sequences, use_period,
-                      beam_info)
+                      use_is_periodic, beam_info)
     s = _MADXState(tokens, 1)
     while !_done(s)
         tok = _peek(s)
@@ -894,7 +828,7 @@ function _madx_parse!(tokens, vars, type_defs, line_defs, sequences, use_period,
         # USE command — extract period/sequence name
         if tok == "use"
             _next!(s)
-            _madx_parse_use!(s, use_period)
+            _madx_parse_use!(s, use_period, use_is_periodic)
             continue
         end
         # Unknown statement — skip until semicolon
@@ -1038,7 +972,7 @@ function _madx_parse_beam!(s, vars, beam_info)
     _madx_consume_until_semi!(s)
 end
 
-function _madx_parse_use!(s, use_period)
+function _madx_parse_use!(s, use_period, use_is_periodic)
     _peek(s) == "," && _next!(s)
     while !_done(s) && _peek(s) != ";"
         key = _peek(s)
@@ -1050,6 +984,7 @@ function _madx_parse_use!(s, use_period)
             if key in ("period", "sequence") && !isempty(val) &&
                (isletter(val[1]) || val[1] == '_')
                 isempty(use_period[]) && (use_period[] = val)
+                key == "period" && (use_is_periodic[] = true)
                 _next!(s)
             else
                 _next!(s)  # skip value
@@ -1178,7 +1113,7 @@ end
 # ---- MAD-X element builder ----
 function _madx_build_element(name::String, d::Dict, type_defs::Dict;
                              strict::Bool=true, beam_energy::Real=1.0e9,
-                             num_int_steps::Int=10)
+                             beam_charge::Real=1.0, num_int_steps::Int=10)
     type_kw = uppercase(get(d, "_type", "DRIFT"))
     base    = _madx_resolve_base(type_kw, type_defs)
     p       = merge(base, d)
@@ -1216,26 +1151,26 @@ function _madx_build_element(name::String, d::Dict, type_defs::Dict;
     elseif mtype in ("MARKER", "IP")
         return Marker(; name=sname)
     elseif mtype == "QUADRUPOLE"
-        pa = k1s != 0 ? [k1s, 0.0, 0.0, 0.0] : nothing
+        pa = k1s != 0 ? [0.0, k1s, 0.0, 0.0] : nothing
         return Quadrupole(
             L, k1;
             name=sname, polynom_a=pa, num_int_steps=num_int_steps,
         )
     elseif mtype == "SEXTUPOLE"
-        pa = k2s != 0 ? [0.0, k2s, 0.0, 0.0] : nothing
+        pa = k2s != 0 ? [0.0, 0.0, k2s, 0.0] : nothing
         return Sextupole(
             L, k2;
             name=sname, polynom_a=pa, num_int_steps=num_int_steps,
         )
     elseif mtype == "OCTUPOLE"
-        pa = k3s != 0 ? [0.0, 0.0, k3s, 0.0] : nothing
+        pa = k3s != 0 ? [0.0, 0.0, 0.0, k3s] : nothing
         return Octupole(
             L, k3;
             name=sname, polynom_a=pa, num_int_steps=num_int_steps,
         )
     elseif mtype == "SBEND"
         pb = k1 != 0 ? [0.0, k1, 0.0, 0.0] : nothing
-        pa = k1s != 0 ? [k1s, 0.0, 0.0, 0.0] : nothing
+        pa = k1s != 0 ? [0.0, k1s, 0.0, 0.0] : nothing
         return SBend(L, angle, e1, e2; name=sname,
                      fint1=fint, fint2=fint2, gap=gap,
                      polynom_a=pa, polynom_b=pb,
@@ -1251,6 +1186,7 @@ function _madx_build_element(name::String, d::Dict, type_defs::Dict;
         return RFCavity(
             L, volt, freq, lag_m;
             name=sname, h=h_, energy=Float64(beam_energy),
+            charge=Float64(beam_charge),
         )
     elseif mtype == "CRABCAVITY"
         phi = lag_c * 2π
@@ -1293,7 +1229,7 @@ end
 
 """
     write_pals(filename, lat; beam=nothing, lattice_name=string(lat.name),
-               branch_name="main", periodic=false)
+               branch_name="main", periodic=nothing)
 
 Write a canonical PALS document containing a `BeginningEle`, one `BeamLine`,
 one `Lattice`, and a final `use` statement. Repeated TrackPad element names are
@@ -1304,8 +1240,9 @@ function write_pals(filename::AbstractString, lat::Lattice;
                     lattice_name::String = string(lat.name),
                     branch_name::String = "main",
                     sequence_name::Union{String,Nothing} = nothing,
-                    periodic::Bool = false)
+                    periodic::Union{Bool,Nothing} = nothing)
     sequence_name !== nothing && (branch_name = sequence_name)
+    branch_periodic = periodic === nothing ? lat.periodic : periodic
     used_names = Dict{String,Int}()
     element_names = String[]
     facility = Any[]
@@ -1331,7 +1268,7 @@ function write_pals(filename::AbstractString, lat::Lattice;
     push!(facility, Dict(
         branch_name => Dict(
             "kind" => "BeamLine",
-            "periodic" => periodic,
+            "periodic" => branch_periodic,
             "line" => element_names,
         ),
     ))
@@ -1376,6 +1313,27 @@ function _pals_element_definition(elem::Drift)
 end
 
 _pals_element_definition(::Marker) = Dict{String,Any}("kind" => "Marker")
+
+function _pals_element_definition(patch::Patch)
+    parameters = Dict{String,Any}()
+    for field in (
+        :x_offset,
+        :y_offset,
+        :z_offset,
+        :x_pitch,
+        :y_pitch,
+        :tilt,
+        :t_offset,
+    )
+        value = Float64(getproperty(patch, field))
+        !iszero(value) && (parameters[string(field)] = value)
+    end
+    return Dict{String,Any}(
+        "kind" => "Patch",
+        "length" => 0.0,
+        "PatchP" => parameters,
+    )
+end
 
 function _pals_multipole_group(normal, skew, order)
     group = Dict{String,Any}("Kn$order" => Float64(normal))

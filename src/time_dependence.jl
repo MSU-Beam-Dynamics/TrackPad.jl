@@ -41,8 +41,13 @@ TimeDependentParam(f::Function) = TimeDependentParam(TimeFunction(f))
 TimeDependentParam(a) = TimeDependentParam((_t) -> a)
 TimeDependentParam(a::TimeDependentParam) = a
 
+"""Return a symbolic time-dependent parameter that evaluates to physical time."""
 Time() = TimeDependentParam((ctx) -> (ctx isa TimeContext ? ctx.real_time : ctx))
+
+"""Alias for [`Time`](@ref)."""
 RealTime() = Time()
+
+"""Return a symbolic time-dependent parameter that evaluates to turn index."""
 Turn() = TimeDependentParam((ctx) -> (ctx isa TimeContext ? ctx.turn : 0))
 
 (d::TimeDependentParam)(ctx::TimeContext) = d.f(ctx)
@@ -105,6 +110,12 @@ Base.:(==)(::TimeDependentParam, ::Number) = false
 Base.:(==)(::Number, ::TimeDependentParam) = false
 Base.isinf(::TimeDependentParam) = false
 
+"""
+    teval(value, context)
+
+Evaluate a time-dependent value in a `TimeContext`; return static values
+unchanged and recursively evaluate tuples and static arrays.
+"""
 @inline teval(f::TimeFunction, ctx::TimeContext) = f(ctx)
 @inline teval(f::TimeFunction, real_time::Real) = f(_to_time_context(real_time, 0))
 @inline teval(f::TimeDependentParam, ctx::TimeContext) = f(ctx)
@@ -113,11 +124,13 @@ Base.isinf(::TimeDependentParam) = false
 @inline teval(f::Tuple, ctx) = map(fi -> teval(fi, ctx), f)
 @inline teval(f::StaticArray, ctx) = map(fi -> teval(fi, ctx), f)
 
+"""Lower a `TimeDependentParam` to its callable representation."""
 time_lower(tp::TimeDependentParam) = tp.f
 time_lower(tp) = tp
 time_lower(tp::Tuple) = map(ti -> time_lower(ti), tp)
 time_lower(tp::StaticArray) = static_timecheck(tp) ? TimeFunction(t -> teval(tp, t)) : tp
 
+"""Return whether a value or nested static container depends on time."""
 static_timecheck(_tp) = false
 static_timecheck(::TimeDependentParam) = true
 static_timecheck(::TimeFunction) = true

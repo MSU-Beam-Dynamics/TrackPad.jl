@@ -59,7 +59,7 @@ lat, beam = read_madx(
     sequence=isempty(sequence) ? nothing : sequence,
     num_int_steps=NUM_INT_STEPS,
 )
-twiss = twissline(lat, beam; h=1.0e-7)
+twiss = periodic_twiss(lat, beam; h=1.0e-7)
 chrom = getchrom(
     lat, beam;
     h=1.0e-7, dpp=1.0e-5, centered=true, closed_orbit=true,

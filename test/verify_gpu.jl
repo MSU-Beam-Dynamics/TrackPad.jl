@@ -20,7 +20,9 @@ function scalar_reference(lat::Lattice, beam::Beam{T}, coords::Matrix{T}, nturns
     result = copy(coords)
     for i in axes(result, 1)
         r = SVector{6,T}(result[i, :]...)
-        r = ringpass(lat, r, beam, nturns)
+        for _ in 1:nturns
+            r = linepass(lat, r, beam)
+        end
         result[i, :] .= r
     end
     return result
@@ -36,6 +38,7 @@ function supported_gpu_elements(::Type{T}, energy::T) where T
         Octupole(T(0.1), T(-1.3); num_int_steps=4),
         SBend(T(0.4), T(0.03), T(0.01), T(0.012); num_int_steps=4),
         RFCavity(T(0.1), T(2e5), T(80e6), T(2e-4); energy=energy),
+        RFCavity(T(0.1), T(2e5), T(80e6), T(2e-4); energy=energy, charge=T(-1)),
         Corrector(T(0.12), T(2e-5), T(-3e-5)),
         Solenoid(T(0.18), T(0.25)),
         ThinMultipole(zero(T), z4, T[0, 0.02, -0.03, 0.01]; max_order=3),
@@ -55,11 +58,20 @@ end
         @test isapprox(actual, expected; rtol=2e-13, atol=2e-14)
     end
 
-    ring = Lattice(supported_gpu_elements(T, beam.energy))
+    ring = Lattice(supported_gpu_elements(T, beam.energy); periodic=true)
     expected = scalar_reference(ring, beam, coords0, 3)
     actual = copy(coords0)
     batch_ringpass!(actual, GPULattice(ring, beam; dtype=T), 3)
     @test isapprox(actual, expected; rtol=3e-12, atol=3e-13)
+    @test_throws ArgumentError batch_ringpass!(
+        copy(coords0), GPULattice(Lattice([Drift(T(0.1))]), beam; dtype=T), 1,
+    )
+    @test_throws ArgumentError batch_linepass!(
+        copy(coords0), GPULattice(Lattice([Drift(T(0.1))]), beam; dtype=T), 2,
+    )
+    @test_throws ArgumentError cpu_batch_linepass!(
+        copy(coords0), Lattice([Drift(T(0.1))]), beam, 2,
+    )
     @test_throws ArgumentError batch_linepass!(actual, GPULattice(ring, beam; dtype=T), -1)
 end
 

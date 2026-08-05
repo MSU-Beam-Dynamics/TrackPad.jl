@@ -68,8 +68,9 @@ USE_EXACT_HAMILTONIAN::Bool = true
 """
     check_lost(r::AbstractVector) -> Bool
 
-Check if particle is lost (coordinates exceed limits or are NaN).
-For TPSA / AD coordinate types returns false unconditionally.
+Check whether a particle exceeds global transverse safety limits or contains a
+NaN transverse coordinate. For TPSA/AD coordinate types, return `false` because
+ordered comparisons are not generally defined.
 """
 @inline function check_lost(r::AbstractVector{T}) where T<:Real
     return isnan(r[1]) || abs(r[1]) > COORD_LIMIT || abs(r[3]) > COORD_LIMIT ||
@@ -534,7 +535,7 @@ function pass!(elem::RFCavity{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,
         r = drift6(r, elem.L / 2, beti)
     end
     if elem.energy > zero(T)
-        nv = elem.volt / elem.energy
+        nv = elem.charge * elem.volt / elem.energy
         phase = T(2pi) * elem.freq * ((r[5] - elem.lag) / T(C_LIGHT)) - elem.philag
         delta_new = r[6] - nv * sin(phase) / (beta * beta)
         r = SVector(r[1], r[2], r[3], r[4], r[5], delta_new)
@@ -1209,6 +1210,120 @@ function pass!(elem::SpaceCharge{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T
     # TrackPad's single-particle API has no bunch moments/current.
     # Keep SPACECHARGE as a no-op here (JuTrack also gives zero kick at I=0).
     return r
+end
+
+@inline function _patch_y_rotation(
+    x::T,
+    px::T,
+    y::T,
+    py::T,
+    z::T,
+    delta::T,
+    beta_inverse::T,
+    reference_angle::T,
+) where T
+    angle = -reference_angle
+    iszero(angle) && return x, px, y, py, z, delta
+    cosine = cos(angle)
+    sine = sin(angle)
+    tangent = tan(angle)
+    pz_squared = one(T) + 2 * delta * beta_inverse + delta^2 - px^2 - py^2
+    if pz_squared <= zero(T)
+        nan = T(NaN)
+        return nan, nan, nan, nan, nan, nan
+    end
+    pz = sqrt(pz_squared)
+    denominator = one(T) - tangent * px / pz
+    if abs(denominator) < sqrt(eps(T))
+        nan = T(NaN)
+        return nan, nan, nan, nan, nan, nan
+    end
+    x_new = x / (cosine * denominator)
+    px_new = cosine * px + sine * pz
+    y_new = y + tangent * x * py / (pz * denominator)
+    z_new = z + tangent * x * (beta_inverse + delta) / (pz * denominator)
+    return x_new, px_new, y_new, py, z_new, delta
+end
+
+@inline function _patch_coordinates(
+    x::T,
+    px::T,
+    y::T,
+    py::T,
+    z::T,
+    delta::T,
+    beta_inverse::T,
+    x_offset::T,
+    y_offset::T,
+    z_offset::T,
+    x_pitch::T,
+    y_pitch::T,
+    tilt::T,
+    t_offset::T,
+) where T
+    pz_squared = one(T) + 2 * delta * beta_inverse + delta^2 - px^2 - py^2
+    if pz_squared <= zero(T)
+        nan = T(NaN)
+        return nan, nan, nan, nan, nan, nan
+    end
+    pz = sqrt(pz_squared)
+    x -= x_offset + z_offset * px / pz
+    y -= y_offset + z_offset * py / pz
+    z += z_offset * (beta_inverse + delta) / pz - T(C_LIGHT) * t_offset
+
+    if !iszero(x_pitch)
+        rotated_y, rotated_py, rotated_x, rotated_px, z, delta =
+            _patch_y_rotation(
+                y,
+                py,
+                x,
+                px,
+                z,
+                delta,
+                beta_inverse,
+                -x_pitch,
+            )
+        x, px, y, py = rotated_x, rotated_px, rotated_y, rotated_py
+    end
+    x, px, y, py, z, delta = _patch_y_rotation(
+        x,
+        px,
+        y,
+        py,
+        z,
+        delta,
+        beta_inverse,
+        y_pitch,
+    )
+
+    if !iszero(tilt)
+        cosine = cos(tilt)
+        sine = sin(tilt)
+        x, y = cosine * x + sine * y, -sine * x + cosine * y
+        px, py = cosine * px + sine * py, -sine * px + cosine * py
+    end
+    return x, px, y, py, z, delta
+end
+
+function pass!(patch::Patch{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
+    U = promote_type(T, S)
+    coordinates = _patch_coordinates(
+        U(r[1]),
+        U(r[2]),
+        U(r[3]),
+        U(r[4]),
+        U(r[5]),
+        U(r[6]),
+        U(beti),
+        U(patch.x_offset),
+        U(patch.y_offset),
+        U(patch.z_offset),
+        U(patch.x_pitch),
+        U(patch.y_pitch),
+        U(patch.tilt),
+        U(patch.t_offset),
+    )
+    return SVector{6,U}(coordinates)
 end
 
 function pass!(elem::Translation{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}

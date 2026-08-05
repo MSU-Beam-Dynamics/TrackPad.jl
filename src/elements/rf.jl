@@ -1,7 +1,9 @@
 """
     RFCavity{T, N}
 
-An RF cavity.
+An RF cavity. `charge` is the reference-particle charge in units of the
+elementary charge. Direct construction defaults to `+1` for JuTrack
+compatibility; PALS and MAD-X readers set it from the reference beam.
 """
 struct RFCavity{T, N} <: AbstractCavity
     name::N
@@ -12,17 +14,25 @@ struct RFCavity{T, N} <: AbstractCavity
     lag::T
     philag::T
     energy::T
+    charge::T
 end
 
 function RFCavity(L, volt, freq, lag = 0.0;
-                  name::Union{Symbol, String} = :RFCA, h = 1.0, philag = 0.0, energy = 0.0)
-    T = _promote_element_type(L, volt, freq, lag, h, philag, energy)
-    RFCavity{T, Symbol}(Symbol(name), T(L), T(volt), T(freq), T(h), T(lag), T(philag), T(energy))
+                  name::Union{Symbol, String} = :RFCA, h = 1.0, philag = 0.0,
+                  energy = 0.0, charge = 1.0)
+    T = _promote_element_type(L, volt, freq, lag, h, philag, energy, charge)
+    RFCavity{T, Symbol}(
+        Symbol(name), T(L), T(volt), T(freq), T(h), T(lag), T(philag),
+        T(energy), T(charge),
+    )
 end
 
 function Adapt.adapt_structure(to, x::RFCavity)
-    RFCavity(nothing, adapt(to, x.L), adapt(to, x.volt), adapt(to, x.freq), adapt(to, x.h),
-             adapt(to, x.lag), adapt(to, x.philag), adapt(to, x.energy))
+    RFCavity(
+        adapt(to, x.L), adapt(to, x.volt), adapt(to, x.freq), adapt(to, x.lag);
+        name=x.name, h=adapt(to, x.h), philag=adapt(to, x.philag),
+        energy=adapt(to, x.energy), charge=adapt(to, x.charge),
+    )
 end
 
 const C_LIGHT = 2.99792458e8

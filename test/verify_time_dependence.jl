@@ -37,8 +37,8 @@ try
         @test q_at_1.num_int_steps == 12
 
         d = Drift(1.0; name="D")
-        lat_static = Lattice([d, q0, d])
-        lat_td = Lattice([d, qtd, d])
+        lat_static = Lattice([d, q0, d]; periodic=true)
+        lat_td = Lattice([d, qtd, d]; periodic=true)
         beam = Beam(3.0e9)
         r0 = @SVector [1e-3, 2e-4, 5e-4, -1e-4, 0.0, 0.0]
 

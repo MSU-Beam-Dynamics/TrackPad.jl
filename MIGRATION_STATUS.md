@@ -1,6 +1,6 @@
 # Migration Status
 
-**Last Updated:** 2026-07-22
+**Last Updated:** 2026-08-05
 
 ## Current Snapshot
 
@@ -46,10 +46,10 @@
 | 2.6 Optics and Orbit APIs | IMPLEMENTED AND VERIFIED | JuTrack-compatible finite-difference separation and exact inverse-velocity conventions are covered by parity tests. |
 | 3. TPSA Maps | IMPLEMENTED AS OPTIONAL EXTENSION | `PolySeries` supplies TPSA types; standalone first- and second-order parity tests pass. |
 | 4. Time Dependence | IMPLEMENTED | Time-dependent parameters, element materialization, and verification are present. |
-| 5. Lattice I/O | IMPLEMENTED FOR DOCUMENTED SUBSET | Canonical PALS branch resolution/writing, an EICViBE-oriented in-memory compiler, and compact MAD-X parsing have isolated automated coverage. Full PALS expansion delegates to PALSJulia; production MAD-X sequence import should use EICViBE/cpymad. |
-| 6. Enzyme AD | PARTIAL | Generic Enzyme compatibility tests pass; custom extension-level AD rules remain TODO. |
+| 5. Lattice I/O | IMPLEMENTED FOR DOCUMENTED SUBSET | The exported API is reduced to `read_pals`, `read_madx`, and `write_pals`, operating on native `(Lattice, Beam)` values. Full PALS and production MAD-X language expansion require external parsers. |
+| 6. Enzyme AD | PARTIAL | Batched Jacobians use Enzyme forward mode; second derivatives use finite differences of Enzyme Jacobians. Custom extension-level AD rules remain TODO. |
 | 7. GPU Tracking | IMPLEMENTED FOR SUPPORTED ELEMENTS | CPU backend parity is in the package suite; CUDA Float32/Float64 tracking is verified on an NVIDIA A100. |
-| 8. Documentation | IN PROGRESS | User, element, I/O, TPSA, GPU, and API documentation exists; GPU documentation and related files are not yet committed. |
+| 8. Documentation | COMPLETE FOR CURRENT SCOPE | User, element, conventions, I/O, TPSA, GPU, API, and coding-agent documentation is included. |
 
 ## Element Organization
 
@@ -88,17 +88,17 @@ Legacy grouped files (`linear.jl`, `multipoles.jl`, `bends.jl`,
 
 ## Verification Status
 
-The latest verification on 2026-07-28 used Julia 1.12.6 through the package
-test target on `aphpc`.
+The latest verification on 2026-08-05 used Julia 1.12.6 through the package
+test target on local Apple hardware.
 No numerical or test-integration failures were observed.
 
 ### Verified Results
 
-- The latest complete `Pkg.test()` invocation reported **603 passed, 0 failed,
+- The latest complete `Pkg.test()` invocation reported **637 passed, 0 failed,
   2 intentional broken tests**.
 - The result includes CPU physics, ExactSBend, optics, closed orbit, time
   dependence, Enzyme compatibility, element parity, TPSA verification, and
-  PALS/MAD-X/EICViBE interchange coverage.
+  PALS/MAD-X interchange coverage.
 - CPU `GPULattice` batch smoke test: maximum difference from ordinary tracking
   was `0.0`; parameter-sweep output was finite.
 
@@ -185,17 +185,21 @@ Implemented in `src/gpu.jl`:
 - Parameter-sweep tracking
 - Metal and CUDA extension scaffolding/adaptation paths
 
-Verified on 2026-07-22 with CUDA.jl 5.11.3, Julia 1.12.5, and one NVIDIA
+Verified on 2026-08-05 with CUDA.jl 5.11.3, Julia 1.12.6, and one NVIDIA
 A100-SXM4-40GB (`sm_80`):
 
-- CUDA test suite: **15/15 passed**
-- Float32 one-turn maximum difference from the CPU backend: `7.7641744e-8`
-- Float32 three-turn maximum difference from the CPU backend: `2.2514723e-7`
+- CUDA tracking suite: **33/33 passed**
+- CUDA Enzyme derivative suite: **4/4 passed**
+- Float32 one-turn maximum difference from the CPU backend: `7.932431e-8`
+- Float32 three-turn maximum difference from the CPU backend: `2.379893e-7`
 - Float64 one-turn maximum difference from the CPU backend:
-  `9.281956442602074e-17`
+  `9.387412044535234e-17`
 - Float64 three-turn maximum difference from the CPU backend:
-  `1.8413141020592882e-16`
-- Float32 and Float64 parameter-sweep parity passed.
+  `2.434304927773079e-16`
+- Float32 and Float64 aligned and Cartesian parameter-sweep parity passed.
+- Float64 Enzyme Jacobian, Hessian-vector product, and full-Hessian parity
+  passed with maximum differences `2.2204669603761984e-16`,
+  `2.775798172452394e-11`, and `3.3306690738754696e-11`, respectively.
 - CUDA tests disable scalar indexing with `CUDA.allowscalar(false)`.
 - A 1,000,000-particle, 100-element Float64 benchmark measured `0.43127 s` on
   the 64-thread KernelAbstractions CPU backend, `0.007977 s` on one A100, and
@@ -220,17 +224,17 @@ Current limitations:
 
 ## Lattice I/O Status
 
-- `resolve_pals`: canonical lattice/branch selection, nested BeamLines,
-  repetition, inline definitions, inheritance, occurrence identity, and
-  reference-particle extraction are implemented.
-- `resolve_pals_full`: the optional PALSJulia extension consumes its
-  `full_expanded` tree without an intermediate YAML file.
-- `compile_branch`: compiles resolved PALS or EICViBE-style in-memory element
-  dictionaries and preserves occurrence-to-TrackPad index mappings.
-- `read_pals`: strict canonical branch compilation is implemented.
-- `write_pals`: emits a canonical BeginningEle/BeamLine/Lattice/use document.
+- The public model is one ordered `Lattice`, one `Beam`, and an open-line or
+  periodic-ring boundary. Topology and occurrence identity are not retained.
+- `read_pals`: built-in selected-branch expansion is implemented for the
+  documented PALS subset and returns `(Lattice, Beam)`.
+- `write_pals`: emits a canonical BeginningEle/BeamLine/Lattice/use document
+  and takes periodicity from the lattice by default.
 - `read_madx`: compact LINE/simple-sequence parsing plus BEAM species and
-  reference momentum/energy conversion are implemented.
+  reference momentum/energy conversion are implemented. `USE, PERIOD` marks a
+  ring; other paths default to open unless overridden.
+- Resolver stages remain private implementation details; the public PALS reader
+  returns only `(Lattice, Beam)`.
 - The EIC RCS `RCS9GeV40CellV1.madx` LINE lattice imports as 2,850 elements.
   At 80 integration steps its fractional tunes agree with the supplied MAD-X
   TWISS table within `7e-9`, and all four beta/alpha arrays within `3e-8`.
@@ -243,27 +247,22 @@ Current limitations:
 - User documentation exists in `docs/src/io.md`.
 - `test/verify_io.jl` covers canonical PALS resolution, inline branches,
   inheritance/repetition, strict errors, round trips, duplicate names,
-  reference beams, MAD-X beam conversion, and EICViBE in-memory compilation.
-- Full PALS expressions, controllers, includes, forks, and bookkeeping use
-  PALSJulia/pals-cpp expansion.
-- Production MAD-X placement semantics remain delegated to EICViBE/cpymad.
-
-## Repository State at Audit
-
-The `codex/pals-eicvibe-compat` branch was created from a working tree that
-already contained modified and untracked GPU, Metal-extension, script, and
-documentation files. Those pre-existing changes remain unstaged alongside the
-PALS/EICViBE work and are not fully represented by the current HEAD commit.
+  reference beams, MAD-X beam conversion, boundary inference, skew multipole
+  mapping, and the reduced public API boundary.
+- Full PALS expressions, controllers, includes, forks, and bookkeeping require
+  preprocessing by an external parser or consumer adapter.
+- Production MAD-X placement semantics remain delegated to an external full
+  parser such as MAD-X/cpymad.
 
 ## Next Actions
 
 The prioritized TrackPad-side integration backlog is maintained in
 `EICVIBE_INTEGRATION_TODO.md`.
 
-1. Stabilize the EICViBE bridge contract and complete the minimum optics,
-   diagnostics, and live-update APIs in `EICVIBE_INTEGRATION_TODO.md`.
-2. Add PALSJulia/pals-cpp conformance fixtures and CI coverage for
-   `resolve_pals_full`.
+1. Complete transport-line optics and selected-point diagnostics in
+   `EICVIBE_INTEGRATION_TODO.md`.
+2. Add representative PALS subset fixtures and document external-parser
+   handoff requirements.
 3. Implement and verify Enzyme extension rules where generic differentiation is
    insufficient.
 4. Add automated Metal hardware verification and expand GPU element coverage

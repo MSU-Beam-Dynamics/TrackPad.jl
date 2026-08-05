@@ -8,7 +8,7 @@ using LinearAlgebra
 D = Drift(1.0; name="D")
 QF = Quadrupole(0.5, 0.6; name="QF", num_int_steps=8)
 QD = Quadrupole(0.5, -0.6; name="QD", num_int_steps=8)
-ring = Lattice([D, QF, D, QD])
+ring = Lattice([D, QF, D, QD]; periodic=true)
 beam = Beam(3.0e9)
 
 ring_jt = [

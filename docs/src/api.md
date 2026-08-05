@@ -18,6 +18,7 @@ M_PROTON
 
 ```@docs
 Lattice
+isperiodic
 total_length
 get_length
 spos
@@ -62,11 +63,13 @@ AbstractOptics4D
 optics2D
 optics4DUC
 TwissLineResult
+TransportTwissResult
 ```
 
 ### Map Computation
 
 ```@docs
+transfer_map
 one_turn_map
 fastfindm66
 findm66
@@ -77,6 +80,8 @@ findm66_refpts
 ### Twiss Analysis
 
 ```@docs
+periodic_twiss
+transport_twiss
 twissline
 twissring
 twissPropagate
@@ -106,7 +111,7 @@ tpsa_map
 
 !!! note "Extension packages"
     GPU support requires loading a backend package alongside TrackPad.
-    See the [GPU Acceleration](@ref) guide for usage examples.
+    See the [GPU guide](@ref gpu_guide) for usage examples.
 
 ```@docs
 GPULattice

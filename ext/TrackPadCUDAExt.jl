@@ -18,7 +18,7 @@ beam = Beam(18e9)
 lat  = Lattice([Quadrupole(0.5, 1.2; num_int_steps=4),
                 Drift(1.0),
                 Quadrupole(0.5, -1.2; num_int_steps=4),
-                Drift(1.0)])
+                Drift(1.0)]; periodic=true)
 
 N = 100_000
 coords = CUDA.randn(Float64, N, 6)

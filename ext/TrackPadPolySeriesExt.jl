@@ -670,6 +670,8 @@ end
 
 function TrackPad.ringpass(lat::Lattice, r::SVector{6,CTPS{T}}, beam::Beam{T}, nturns::Int;
                            time::Real=zero(T), dt_turn::Real=zero(T), turn::Integer=0) where T
+    TrackPad._require_periodic(lat, "ringpass")
+    nturns >= 0 || throw(ArgumentError("nturns must be nonnegative"))
     t = T(time)
     dt = T(dt_turn)
     trn = Int(turn)

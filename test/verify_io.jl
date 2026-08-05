@@ -1,5 +1,6 @@
 using Test
 using TrackPad
+using StaticArrays
 using YAML
 
 function write_fixture(contents)
@@ -7,6 +8,60 @@ function write_fixture(contents)
     write(io, contents)
     close(io)
     return path
+end
+
+@testset "Consumer-neutral core API" begin
+    removed_names = (
+        :eicvibe_capabilities,
+        :eicvibe_compile_yaml,
+        :eicvibe_twiss,
+        :eicvibe_twiss_yaml,
+        :eicvibe_track,
+        :eicvibe_track_bpm,
+        :eicvibe_closed_orbit,
+    )
+    @test all(name -> !isdefined(TrackPad, name), removed_names)
+    @test all(
+        name -> !(name in names(TrackPad)),
+        (:resolve_pals, :resolve_pals_full, :compile_branch, :CompiledBranch),
+    )
+    @test !isdefined(TrackPad, :resolve_pals_full)
+    @test !isdefined(TrackPad, :compile_branch)
+    @test !isdefined(TrackPad, :CompiledBranch)
+
+    beam = Beam(1.0e9)
+    ring = Lattice(AbstractElement[
+        Drift(1.0; name=:D1),
+        Quadrupole(0.3, 0.7; name=:QF),
+        Drift(1.0; name=:D2),
+        Quadrupole(0.3, -0.7; name=:QD),
+    ]; periodic=true)
+    initial = @SVector [0.0, 1.0e-3, 0.0, 0.0, 0.0, 0.0]
+    tracked = linepass(ring, initial, beam)
+    @test tracked isa SVector{6,Float64}
+    @test all(isfinite, tracked)
+
+    optics = periodic_twiss(ring, beam)
+    @test length(optics.s) == length(ring) + 1
+    @test all(isfinite, optics.betax)
+    @test find_closed_orbit_4d(ring, beam) ≈ zeros(4) atol=1e-12
+
+    path = write_fixture("""
+    PALS:
+      facility:
+        - frame_change:
+            kind: Patch
+            PatchP:
+              x_offset: 0.0309
+        - transport:
+            kind: BeamLine
+            line: [frame_change]
+    """)
+    patch_line, _ = read_pals(path; beam_energy=beam.energy)
+    @test !isperiodic(patch_line)
+    @test patch_line[1] isa Patch
+    @test patch_line[1].x_offset == 0.0309
+    rm(path; force=true)
 end
 
 @testset "Canonical PALS branch resolution" begin
@@ -63,17 +118,8 @@ end
         - use: collider
     """)
 
-    resolved = resolve_pals(path)
-    @test resolved.lattice_name == "collider"
-    @test resolved.name == "electron_ring"
-    @test resolved.periodic
-    @test length(resolved.elements) == 7
-    @test [e.name for e in resolved.elements[2:5]] ==
-          ["qbase", "qneg", "qbase", "qneg"]
-    @test [e.occurrence for e in resolved.elements[2:5]] == [1, 1, 2, 2]
-    @test resolved.reference["pc_ref"] == 3.0e9
-
     lattice, beam = read_pals(path)
+    @test isperiodic(lattice)
     @test lattice.name == :collider
     @test length(lattice) == 6
     @test lattice[1] isa Quadrupole
@@ -84,6 +130,8 @@ end
     @test lattice[5].angle == 0.125
     @test lattice[6] isa RFCavity
     @test lattice[6].energy == beam.energy
+    @test lattice[6].charge == -1.0
+    @test lattice[6].lag ≈ 0.25 * 2.99792458e8 / 5.0e8
     @test beam.mass == M_ELECTRON
     @test beam.charge == -1.0
     @test beam.energy ≈ sqrt((3.0e9)^2 + M_ELECTRON^2) - M_ELECTRON
@@ -107,10 +155,8 @@ end
         - use: line_machine
     """)
 
-    resolved = resolve_pals(path; branch=:transport)
-    @test resolved.name == "transport"
-    @test length(resolved.elements) == 1
     lattice, _ = read_pals(path; branch=:transport)
+    @test !isperiodic(lattice)
     @test lattice[1] isa Drift
     @test lattice[1].L == 1.5
 
@@ -154,12 +200,13 @@ end
             ),
         ];
         name=:machine,
+        periodic=true,
     )
 
     path = tempname() * ".yaml"
     write_pals(
         path, original;
-        beam=beam, lattice_name="machine", branch_name="ring", periodic=true,
+        beam=beam, lattice_name="machine", branch_name="ring",
     )
     raw = YAML.load_file(path; dicttype=Dict{String,Any})
     facility = raw["PALS"]["facility"]
@@ -175,6 +222,7 @@ end
     @test definitions["use"] == "machine"
 
     restored, restored_beam = read_pals(path)
+    @test isperiodic(restored)
     @test length(restored) == length(original)
     @test restored[1].L == 1.0
     @test restored[2].L == 2.0
@@ -183,6 +231,7 @@ end
     @test restored[4].angle == 0.15
     @test restored[5].volt == 1.5e6
     @test restored[5].lag ≈ 0.03
+    @test restored[5].charge == 1.0
     @test restored_beam.mass == M_PROTON
     @test restored_beam.charge == 1.0
     @test restored_beam.energy ≈ beam.energy
@@ -200,6 +249,7 @@ end
     """)
 
     lattice, beam = read_madx(path; sequence="RING")
+    @test isperiodic(lattice)
     @test lattice.name == :ring
     @test length(lattice) == 2
     @test lattice[1] isa Drift
@@ -207,10 +257,45 @@ end
     @test lattice[2].volt == 2.0e6
     @test lattice[2].freq == 5.0e8
     @test lattice[2].lag ≈ 0.25 * 2.99792458e8 / 5.0e8
+    @test lattice[2].charge == 1.0
     @test lattice[2].energy == beam.energy
     @test beam.mass == M_PROTON
     @test beam.charge == 1.0
     @test beam.energy ≈ sqrt((3.0e9)^2 + M_PROTON^2) - M_PROTON
+
+    rm(path; force=true)
+end
+
+@testset "MAD-X RF phase uses reference charge" begin
+    path = write_fixture("""
+    beam, particle=electron, energy=9.0;
+    rf: rfcavity, volt=30.12, freq=591.0, lag=0.5, harmon=2971;
+    ring: line=(rf);
+    use, period=ring;
+    """)
+
+    lattice, beam = read_madx(path)
+    cavity = lattice[1]
+    @test cavity isa RFCavity
+    @test cavity.charge == -1.0
+    @test cavity.lag ≈ 0.5 * 2.99792458e8 / cavity.freq
+
+    dz = 1.0e-6
+    plus = pass!(
+        cavity, SVector(0.0, 0.0, 0.0, 0.0, dz, 0.0), inv(beam.beta),
+    )
+    minus = pass!(
+        cavity, SVector(0.0, 0.0, 0.0, 0.0, -dz, 0.0), inv(beam.beta),
+    )
+    rf_slope = (plus[6] - minus[6]) / (2dz)
+    expected = cavity.charge * cavity.volt / cavity.energy *
+               (2π * cavity.freq / 2.99792458e8) / beam.beta^2
+    @test rf_slope < 0
+    @test rf_slope ≈ expected rtol=1.0e-6
+
+    # A positive-slip ring is stable only when this slope is negative.
+    r56 = 2.5
+    @test abs(2 + r56 * rf_slope) < 2
 
     rm(path; force=true)
 end
@@ -227,6 +312,7 @@ end
     """)
 
     lattice, beam = read_madx(path; num_int_steps=24)
+    @test isperiodic(lattice)
     @test length(lattice) == 3
     @test lattice[1] isa Marker
     @test lattice[1].name == Symbol("mar.sep")
@@ -242,46 +328,22 @@ end
     rm(path; force=true)
 end
 
-@testset "EICViBE in-memory branch interchange" begin
-    elements = Any[
-        Dict(
-            "name" => "d",
-            "kind" => "Drift",
-            "length" => 1.0,
-        ),
-        Dict(
-            "name" => "q",
-            "source_name" => "q_prototype",
-            "kind" => "Quadrupole",
-            "length" => 0.4,
-            "MagneticMultipoleP" => Dict("Kn1" => 0.8),
-        ),
-        Dict(
-            "name" => "d",
-            "kind" => "Drift",
-            "length" => 2.0,
-        ),
-    ]
-    reference = Dict(
-        "species_ref" => "electron",
-        "E_tot_ref" => 1.5e9,
-    )
+@testset "MAD-X skew multipole slots and open boundary" begin
+    path = write_fixture("""
+    beam, particle=electron, energy=3.0;
+    q: quadrupole, l=0.2, k1=0.7, k1s=0.11;
+    s: sextupole, l=0.2, k2=1.2, k2s=0.22;
+    o: octupole, l=0.2, k3=1.4, k3s=0.33;
+    b: sbend, l=0.4, angle=0.02, k1s=0.44;
+    transport: line=(q, s, o, b);
+    """)
 
-    compiled = compile_branch(
-        elements;
-        machine_name=:collider,
-        branch_name=:electron_ring,
-        periodic=true,
-        reference=reference,
-    )
-    @test compiled.lattice.name == :collider
-    @test compiled.branch_name == "electron_ring"
-    @test compiled.periodic
-    @test length(compiled.lattice) == 3
-    @test compiled.lattice[2] isa Quadrupole
-    @test compiled.lattice[2].k1 == 0.8
-    @test compiled.source_index[("d", 1)] == 1
-    @test compiled.source_index[("q", 1)] == 2
-    @test compiled.source_index[("d", 2)] == 3
-    @test compiled.beam.energy ≈ 1.5e9 - M_ELECTRON
+    lattice, _ = read_madx(path)
+    @test !isperiodic(lattice)
+    @test lattice[1].polynom_a == @SVector [0.0, 0.11, 0.0, 0.0]
+    @test lattice[2].polynom_a == @SVector [0.0, 0.0, 0.22, 0.0]
+    @test lattice[3].polynom_a == @SVector [0.0, 0.0, 0.0, 0.33]
+    @test lattice[4].polynom_a == @SVector [0.0, 0.44, 0.0, 0.0]
+
+    rm(path; force=true)
 end

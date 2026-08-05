@@ -15,15 +15,28 @@ using LinearAlgebra
 using StaticArrays
 
 export AbstractOptics, AbstractOptics2D, AbstractOptics4D, optics2D, optics4DUC
-export TwissLineResult, one_turn_map, gettune, getchrom, twissline
+export TwissLineResult, TransportTwissResult
+export transfer_map, one_turn_map, gettune, getchrom
+export periodic_twiss, transport_twiss, twissline
 export find_closed_orbit_4d, find_closed_orbit_6d
 export findm66, fastfindm66, findm66_refpts, fastfindm66_refpts
 export periodicEdwardsTengTwiss, twissring, twissPropagate
 
+"""Abstract supertype for TrackPad optics data."""
 abstract type AbstractOptics end
+
+"""Abstract supertype for one-plane optics data."""
 abstract type AbstractOptics2D <: AbstractOptics end
+
+"""Abstract supertype for transverse four-dimensional optics data."""
 abstract type AbstractOptics4D <: AbstractOptics end
 
+"""
+    optics2D(beta, alpha, phase=0, eta=0, etap=0)
+
+Courant-Snyder and dispersion data for one uncoupled transverse plane.
+`gamma` is calculated as `(1 + alpha^2)/beta`.
+"""
 struct optics2D{T} <: AbstractOptics2D
     beta::T
     alpha::T
@@ -43,6 +56,12 @@ end
 
 optics2D(beta::Real, alpha::Real) = optics2D(beta, alpha, 0.0, 0.0, 0.0)
 
+"""
+    optics4DUC(bx, ax, by, ay)
+
+Uncoupled transverse optics containing horizontal and vertical [`optics2D`](@ref)
+values.
+"""
 struct optics4DUC{T} <: AbstractOptics4D
     optics_x::optics2D{T}
     optics_y::optics2D{T}
@@ -55,6 +74,13 @@ function optics4DUC(bx::Real, ax::Real, by::Real, ay::Real)
     return optics4DUC(ox, oy)
 end
 
+"""
+    TwissLineResult
+
+Uncoupled periodic Twiss result at every lattice boundary. Arrays `s`,
+`betax`, `alphax`, `betay`, `alphay`, `mux`, and `muy` have length
+`length(lattice) + 1`; `tunex` and `tuney` are the one-turn fractional tunes.
+"""
 struct TwissLineResult{T}
     s::Vector{T}
     betax::Vector{T}
@@ -65,6 +91,24 @@ struct TwissLineResult{T}
     muy::Vector{T}
     tunex::T
     tuney::T
+end
+
+"""
+    TransportTwissResult
+
+Uncoupled Twiss propagation through one ordered path from supplied entrance
+optics. Arrays contain values at all `length(lattice) + 1` boundaries. Unlike
+[`TwissLineResult`](@ref), this type has no tune because an open line has no
+periodic one-turn condition.
+"""
+struct TransportTwissResult{T}
+    s::Vector{T}
+    betax::Vector{T}
+    alphax::Vector{T}
+    betay::Vector{T}
+    alphay::Vector{T}
+    mux::Vector{T}
+    muy::Vector{T}
 end
 
 @inline _unit6(::Type{T}, i::Int) where T = SVector{6,T}(ntuple(j -> (j == i ? one(T) : zero(T)), 6))
@@ -103,11 +147,12 @@ function _validate_refpts(refpts::AbstractVector{<:Integer}, n::Int)
 end
 
 """
-    one_turn_map(lat, beam; reference=zeros, h=1e-8)
+    transfer_map(lat, beam; reference=zeros, h=1e-8)
 
-Finite-difference estimate of the 6x6 one-turn Jacobian about `reference`.
+Finite-difference estimate of the 6x6 map through an open line or periodic
+ring, evaluated about `reference`.
 """
-function one_turn_map(lat::Lattice, beam::Beam{T};
+function transfer_map(lat::Lattice, beam::Beam{T};
                       reference::SVector{6,T}=zero(SVector{6,T}),
                       h::T=T(1e-8)) where T
     M = Matrix{T}(undef, 6, 6)
@@ -118,6 +163,17 @@ function one_turn_map(lat::Lattice, beam::Beam{T};
         @inbounds M[:, i] = (rp - rm) / (2h)
     end
     return M
+end
+
+"""
+    one_turn_map(lat, beam; reference=zeros, h=1e-8)
+
+Finite-difference estimate of a periodic lattice's 6x6 one-turn Jacobian.
+Use [`transfer_map`](@ref) for an open line.
+"""
+function one_turn_map(lat::Lattice, beam::Beam{T}; kwargs...) where T
+    _require_periodic(lat, "one_turn_map")
+    return transfer_map(lat, beam; kwargs...)
 end
 
 function _twiss_from_2x2(M::AbstractMatrix{T}) where T
@@ -198,7 +254,7 @@ function fastfindm66(lat_in, dp::Real=0.0;
     beam = _beam_from_energy_mass(E0, m0)
     T = typeof(beam.energy)
     ref = _reference6(T, dp, orb)
-    return one_turn_map(lat, beam; reference=ref, h=T(h) / 2)
+    return transfer_map(lat, beam; reference=ref, h=T(h) / 2)
 end
 
 """
@@ -239,7 +295,7 @@ function fastfindm66_refpts(lat_in, dp::Real, refpts::AbstractVector{<:Integer};
     for (i, rp) in enumerate(refpts)
         seg = prev == 0 ? lat.elements[1:rp] : lat.elements[prev+1:rp]
         seg_lat = Lattice(seg)
-        maps[:, :, i] = one_turn_map(seg_lat, beam; reference=ref, h=T(h) / 2)
+        maps[:, :, i] = transfer_map(seg_lat, beam; reference=ref, h=T(h) / 2)
         prev = rp
     end
     return maps
@@ -280,6 +336,7 @@ Return `(Qx, Qy)` from the uncoupled blocks of the one-turn map.
 function gettune(lat::Lattice, beam::Beam{T};
                  reference::SVector{6,T}=zero(SVector{6,T}),
                  h::T=T(3e-8)) where T
+    _require_periodic(lat, "gettune")
     M = findm66(lat, reference[6], 0; E0=beam.energy, m0=beam.mass, orb=collect(reference), h=h)
     return _tune_from_map(M)
 end
@@ -310,6 +367,7 @@ function getchrom(lat::Lattice, beam::Beam{T};
                   dpp::T=T(1e-8),
                   centered::Bool=false,
                   closed_orbit::Bool=false) where T
+    _require_periodic(lat, "getchrom")
     dpp > zero(T) || throw(ArgumentError("dpp must be positive"))
 
     function tune_at(momentum::T)
@@ -381,6 +439,7 @@ function find_closed_orbit_6d(lat::Lattice, beam::Beam{T};
                               maxiter::Int=20,
                               h::T=T(1e-6),
                               reg::T=T(1e-12)) where T
+    _require_periodic(lat, "find_closed_orbit_6d")
     x = collect(x0)
     eye = Matrix{T}(I, 6, 6)
 
@@ -410,6 +469,7 @@ function find_closed_orbit_4d(lat::Lattice, beam::Beam{T};
                               maxiter::Int=20,
                               h::T=T(1e-6),
                               reg::T=T(1e-12)) where T
+    _require_periodic(lat, "find_closed_orbit_4d")
     x = collect(x0)
     eye = Matrix{T}(I, 4, 4)
 
@@ -442,6 +502,63 @@ function _element_jacobian(elem::AbstractElement, r0::SVector{6,T}, β_inv::T, h
     return J
 end
 
+function _element_jacobians(lat::Lattice, beam::Beam{T},
+                            reference::SVector{6,T}, h::T) where T
+    n = length(lat)
+    β_inv = beti(beam)
+    s = zeros(T, n + 1)
+    jacobians = Vector{Matrix{T}}(undef, n)
+    r = reference
+    for (i, elem) in enumerate(lat.elements)
+        s[i + 1] = s[i] + T(get_length(elem))
+        jacobians[i] = _element_jacobian(elem, r, β_inv, h)
+        r = pass!(elem, r, β_inv)
+    end
+    return s, jacobians
+end
+
+"""
+    transport_twiss(lat, beam, entrance; reference=zeros, h=1e-8)
+
+Propagate supplied uncoupled entrance Twiss parameters through one lattice
+pass. This is the Twiss API for an open transport line and is also valid for a
+single pass through a ring.
+"""
+function transport_twiss(lat::Lattice, beam::Beam{T}, entrance::optics4DUC;
+                         reference::SVector{6,T}=zero(SVector{6,T}),
+                         h::T=T(1e-8)) where T
+    s, jacobians = _element_jacobians(lat, beam, reference, h)
+    n = length(lat)
+
+    betax = zeros(T, n + 1)
+    alphax = zeros(T, n + 1)
+    betay = zeros(T, n + 1)
+    alphay = zeros(T, n + 1)
+    mux = zeros(T, n + 1)
+    muy = zeros(T, n + 1)
+    betax[1] = T(entrance.optics_x.beta)
+    alphax[1] = T(entrance.optics_x.alpha)
+    betay[1] = T(entrance.optics_y.beta)
+    alphay[1] = T(entrance.optics_y.alpha)
+    mux[1] = T(entrance.optics_x.phase)
+    muy[1] = T(entrance.optics_y.phase)
+
+    for i in 1:n
+        horizontal = @view jacobians[i][1:2, 1:2]
+        vertical = @view jacobians[i][3:4, 3:4]
+        betax[i + 1], alphax[i + 1], dmx =
+            _propagate_twiss(betax[i], alphax[i], horizontal)
+        betay[i + 1], alphay[i + 1], dmy =
+            _propagate_twiss(betay[i], alphay[i], vertical)
+        mux[i + 1] = mux[i] + dmx
+        muy[i + 1] = muy[i] + dmy
+    end
+
+    return TransportTwissResult{T}(
+        s, betax, alphax, betay, alphay, mux, muy,
+    )
+end
+
 """
     twissline(lat, beam; reference=zeros, h=1e-8)
 
@@ -450,17 +567,9 @@ Compute uncoupled periodic Twiss functions at each element boundary.
 function twissline(lat::Lattice, beam::Beam{T};
                    reference::SVector{6,T}=zero(SVector{6,T}),
                    h::T=T(1e-8)) where T
+    _require_periodic(lat, "twissline(lat, beam)")
     n = length(lat)
-    β_inv = beti(beam)
-
-    s = zeros(T, n + 1)
-    Jlist = Vector{Matrix{T}}(undef, n)
-    r = reference
-    for (i, elem) in enumerate(lat.elements)
-        s[i+1] = s[i] + T(get_length(elem))
-        Jlist[i] = _element_jacobian(elem, r, β_inv, h)
-        r = pass!(elem, r, β_inv)
-    end
+    s, Jlist = _element_jacobians(lat, beam, reference, h)
 
     M = Matrix{T}(I, 6, 6)
     for J in Jlist
@@ -492,6 +601,17 @@ function twissline(lat::Lattice, beam::Beam{T};
 end
 
 """
+    periodic_twiss(lat, beam; kwargs...)
+
+Compute uncoupled periodic Twiss parameters for a ring. This is the explicit
+ring-oriented name for [`twissline`](@ref).
+"""
+function periodic_twiss(lat::Lattice, beam::Beam; kwargs...)
+    _require_periodic(lat, "periodic_twiss")
+    return twissline(lat, beam; kwargs...)
+end
+
+"""
     periodicEdwardsTengTwiss(seq_or_lat, dp, order; E0=3e9, m0=M_ELECTRON, orb=zeros(6), h=3e-8)
 
 JuTrack-style periodic optics interface (uncoupled 4D projection).
@@ -501,6 +621,7 @@ function periodicEdwardsTengTwiss(lat_in, dp::Real, order::Integer;
                                   m0::Real=M_ELECTRON,
                                   orb::AbstractVector=zeros(6),
                                   h::Real=3e-8)
+    lat_in isa Lattice && _require_periodic(lat_in, "periodicEdwardsTengTwiss")
     M = findm66(lat_in, dp, order; E0=E0, m0=m0, orb=orb, h=h)
     bx, ax, _, _ = _twiss_from_2x2(@view M[1:2, 1:2])
     by, ay, _, _ = _twiss_from_2x2(@view M[3:4, 3:4])
@@ -520,6 +641,7 @@ function twissring(lat_in, dp::Real, order::Integer;
         @warn "twissring: order > 0 TPSA optics is deferred; using finite-difference fallback."
     end
     lat = _as_lattice(lat_in)
+    _require_periodic(lat, "twissring")
     beam = _beam_from_energy_mass(E0, m0)
     T = typeof(beam.energy)
     ref = SVector{6,T}(zero(T), zero(T), zero(T), zero(T), zero(T), T(dp))

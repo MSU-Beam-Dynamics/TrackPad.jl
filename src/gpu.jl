@@ -6,10 +6,9 @@ GPU-accelerated particle tracking for TrackPad.jl.
 Built on KernelAbstractions.jl for backend-agnostic kernels that run on:
   - Apple Metal  (Float32 only — Apple GPU constraint)
   - NVIDIA CUDA  (Float32 or Float64)
-  - AMD ROCm     (Float32 or Float64)
   - CPU          (fallback, multi-threaded via Threads.@threads)
 
-Three use cases are supported:
+Three packed-tracking use cases are supported:
   1. **Multi-particle tracking**   — `batch_linepass!(coords, gl)`:
      N particles through the same lattice.  One GPU thread per particle.
 
@@ -17,9 +16,11 @@ Three use cases are supported:
      One (or N) particles through N different lattice configurations.
      One GPU thread per configuration.
 
-  3. **Multi-TPSA tracking**       — *not yet implemented*.
-     TPSA power-series objects carry complex algebraic state that cannot
-     be packed into simple float arrays.  Future work.
+  3. **Batched derivatives**       — Enzyme extension APIs for Jacobians,
+     Hessian-vector products, and Hessians of supported packed tracking.
+
+GPU TPSA is not implemented. TPSA power-series objects carry algebraic state
+that cannot be packed into the current float parameter arrays.
 
 ## Typical workflow (Metal / Apple GPU)
 
@@ -61,6 +62,7 @@ const GPU_RFCAV  = Int32(7)
 const GPU_CORR   = Int32(8)
 const GPU_SOL    = Int32(9)
 const GPU_THIN   = Int32(10)
+const GPU_PATCH  = Int32(11)
 
 # ============================================================
 # Parameter layout
@@ -80,9 +82,12 @@ const GPU_THIN   = Int32(10)
 #              [17]=fringe_entrance  [18]=fringe_exit
 #   RFCAV:
 #              [2]=volt  [3]=freq  [4]=lag  [5]=energy  [6]=h  [7]=philag
+#              [8]=charge
 #   CORR:      [2]=xkick  [3]=ykick
 #   SOL:       [2]=ks
 #   THIN:      [2..5]=pa[1..4]  [6..9]=pb[1..4]
+#   PATCH:     [2]=x_offset  [3]=y_offset  [4]=z_offset
+#              [5]=x_pitch   [6]=y_pitch   [7]=tilt  [8]=t_offset
 #
 # Int param slots:
 #   [1] = num_int_steps
@@ -105,6 +110,9 @@ Lattice encoded as plain arrays for GPU kernel consumption.
 - `MF` : float matrix type (`Matrix{T}`, `MtlArray{T,2}`, …)
 - `MI` : int matrix type (`Matrix{Int32}`, …)
 
+The source lattice's open/periodic boundary is retained for multi-pass
+validation.
+
 Construct with [`gpu_adapt`](@ref) or `GPULattice(lat, beam; dtype=Float32)`.
 """
 struct GPULattice{T,
@@ -116,6 +124,7 @@ struct GPULattice{T,
     iparams    :: MI          # (N_GPU_IPARAMS, n_elems)
     n_elems    :: Int32
     beti       :: T           # 1/β from Beam
+    periodic   :: Bool
 end
 
 Adapt.@adapt_structure GPULattice
@@ -453,6 +462,24 @@ end
     elseif etype == GPU_MARKER
         # no-op
 
+    elseif etype == GPU_PATCH
+        x, px, y, py, z, d = _patch_coordinates(
+            x,
+            px,
+            y,
+            py,
+            z,
+            d,
+            beti,
+            @inbounds(fparams[2, i]),
+            @inbounds(fparams[3, i]),
+            @inbounds(fparams[4, i]),
+            @inbounds(fparams[5, i]),
+            @inbounds(fparams[6, i]),
+            @inbounds(fparams[7, i]),
+            @inbounds(fparams[8, i]),
+        )
+
     elseif etype == GPU_QUAD || etype == GPU_SEXT || etype == GPU_OCT
         k   = @inbounds fparams[2, i]
         pa0 = @inbounds fparams[3, i]; pa1 = @inbounds fparams[4, i]
@@ -495,11 +522,12 @@ end
         lag    = @inbounds fparams[4, i]
         energy = @inbounds fparams[5, i]
         philag = @inbounds fparams[7, i]
+        charge = @inbounds fparams[8, i]
         if L > zero(T)
             x, px, y, py, z, d = _gpu_drift(x, px, y, py, z, d, L/T(2), beti)
         end
         if energy > zero(T)
-            nv    = volt / energy
+            nv    = charge * volt / energy
             phase = T(2*pi) * freq * (z - lag) / T(2.99792458e8) - philag
             beta  = one(T) / beti
             d     = d - nv * sin(phase) / (beta * beta)
@@ -552,6 +580,7 @@ function _gpu_elem_type(elem)::Int32
     elem isa Corrector     && return GPU_CORR
     elem isa Solenoid      && return GPU_SOL
     elem isa ThinMultipole && return GPU_THIN
+    elem isa Patch         && return GPU_PATCH
     throw(ArgumentError("GPU tracking does not support $(typeof(elem))"))
 end
 
@@ -624,6 +653,7 @@ function _gpu_fparams(::Type{T}, elem) where T
         fp[4] = T(elem.lag);   fp[5] = T(elem.energy)
         fp[6] = T(hasproperty(elem, :h)      ? elem.h      : 0)
         fp[7] = T(hasproperty(elem, :philag) ? elem.philag : 0)
+        fp[8] = T(hasproperty(elem, :charge) ? elem.charge : 1)
 
     elseif et == GPU_CORR
         fp[1] = T(elem.L)
@@ -638,6 +668,15 @@ function _gpu_fparams(::Type{T}, elem) where T
             fp[1+k] = active ? T(elem.polynom_a[k]) : zero(T)
             fp[5+k] = active ? T(elem.polynom_b[k]) : zero(T)
         end
+
+    elseif et == GPU_PATCH
+        fp[2] = T(elem.x_offset)
+        fp[3] = T(elem.y_offset)
+        fp[4] = T(elem.z_offset)
+        fp[5] = T(elem.x_pitch)
+        fp[6] = T(elem.y_pitch)
+        fp[7] = T(elem.tilt)
+        fp[8] = T(elem.t_offset)
     end
 
     return fp
@@ -678,6 +717,9 @@ function GPULattice(lat::Lattice, beam::Beam = Beam(1e9); dtype::Type{T} = Float
     iparams_m = zeros(Int32, N_GPU_IPARAMS, n)
 
     for (i, elem) in enumerate(elems)
+        elem isa TimeVaryingElement && throw(ArgumentError(
+            "GPU tracking does not support time-varying elements",
+        ))
         raw = _resolve_for_time(elem, TimeContext(0.0))
         _validate_gpu_element(raw)
         etypes_v[i] = _gpu_elem_type(raw)
@@ -687,7 +729,9 @@ function GPULattice(lat::Lattice, beam::Beam = Beam(1e9); dtype::Type{T} = Float
         for k in 1:N_GPU_IPARAMS;  iparams_m[k, i] = ip[k];  end
     end
 
-    return GPULattice(etypes_v, fparams_m, iparams_m, Int32(n), T(beti(beam)))
+    return GPULattice(
+        etypes_v, fparams_m, iparams_m, Int32(n), T(beti(beam)), lat.periodic,
+    )
 end
 
 # ============================================================
@@ -721,7 +765,7 @@ configurations.
 | Sext     |  2   | `k2`                 |
 | SBend    |  2   | `angle`              |
 | SBend    |  8   | `irho` (= angle/L)   |
-| RFCavity |  2   | `volt` (in eV)       |
+| RFCavity |  2   | `volt` (V)           |
 | RFCavity |  3   | `freq` (Hz)          |
 
 ## Example
@@ -866,6 +910,9 @@ end
 # batch_linepass!  (Use case 1)
 # ============================================================
 
+_batch_workgroup(backend) =
+    backend isa KernelAbstractions.CPU ? 32 : 256
+
 """
     batch_linepass!(coords::AbstractMatrix, gl::GPULattice,
                     nturns::Integer = 1) -> coords
@@ -885,9 +932,12 @@ function batch_linepass!(coords::AbstractMatrix{T},
                           gl::GPULattice{T},
                           nturns::Integer = 1) where T
     nturns >= 0 || throw(ArgumentError("nturns must be nonnegative"))
+    nturns <= 1 || gl.periodic || throw(ArgumentError(
+        "repeated batch tracking requires a periodic GPULattice",
+    ))
     n_particles = Int32(size(coords, 1))
     backend = get_backend(coords)
-    kernel  = _gpu_linepass_kernel!(backend, 256)
+    kernel = _gpu_linepass_kernel!(backend, _batch_workgroup(backend))
     for _ in 1:nturns
         kernel(coords, gl.elem_types, gl.fparams, gl.iparams,
                gl.n_elems, gl.beti;
@@ -906,6 +956,9 @@ This is the explicit multi-turn counterpart of [`batch_linepass!`](@ref).
 function batch_ringpass!(coords::AbstractMatrix{T},
                          gl::GPULattice{T},
                          nturns::Integer) where T
+    gl.periodic || throw(ArgumentError(
+        "batch_ringpass! requires a periodic GPULattice",
+    ))
     return batch_linepass!(coords, gl, nturns)
 end
 
@@ -960,6 +1013,10 @@ to parallelise over particles.  No GPU required.
 function cpu_batch_linepass!(coords::Matrix{T}, lat::Lattice,
                               beam::Beam = Beam(1e9),
                               nturns::Integer = 1) where T
+    nturns >= 0 || throw(ArgumentError("nturns must be nonnegative"))
+    nturns <= 1 || lat.periodic || throw(ArgumentError(
+        "repeated CPU batch tracking requires a periodic lattice",
+    ))
     n  = size(coords, 1)
     β_inv = T(beti(beam))
     for _ in 1:nturns

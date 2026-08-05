@@ -1,6 +1,6 @@
 export AbstractElement, AbstractMagnet, AbstractDrift, AbstractCavity
 export AbstractTransferMap, AbstractTransverseMap, AbstractLongitudinalRFMap
-export Marker, Drift, Quadrupole, Sextupole, Octupole, SBend, RFCavity, ThinMultipole, Solenoid, Corrector
+export Marker, Patch, Drift, Quadrupole, Sextupole, Octupole, SBend, RFCavity, ThinMultipole, Solenoid, Corrector
 export ExactSBend
 export DriftSC, QuadrupoleSC, SextupoleSC, OctupoleSC, SBendSC
 export RBend, RBendSC, ERBend, LBend
@@ -13,6 +13,7 @@ export LongitudinalRLCWake, LongitudinalWake, wakefieldfunc_RLCWake, wakefieldfu
 
 include("elements/core.jl")
 include("elements/marker.jl")
+include("elements/patch.jl")
 include("elements/drift.jl")
 include("elements/quad.jl")
 include("elements/multipole.jl")

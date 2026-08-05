@@ -1,165 +1,102 @@
-# TrackPad Integration with EICViBE
+# TrackPad Integration-Side TODO
 
-## Objective
+## Scope
 
-Make TrackPad the always-available local reference engine for EICViBE.
-TrackPad should provide fast basic optics and tracking without taking ownership
-of EICViBE's machine topology, controls, sessions, or user interface. XSuite,
-BMAD, MAD-X, and other engines remain optional higher-fidelity tools selected
-when their additional capabilities are required.
+TrackPad is a tracking engine for one ordered path and one reference beam. Its
+runtime model contains only:
 
-The primary boundary is an occurrence-specific, PALS-compatible branch:
+- `Beam`;
+- `Lattice.elements`;
+- an open-line or periodic-ring boundary.
+
+Machine topology, branch graphs, route selection, source-occurrence identity,
+control mappings, sessions, serialization policy, and consumer result types do
+not belong in TrackPad.
 
 ```text
-EICViBE machine and branch model
+consumer or full parser
         |
-        | in-memory PALS-compatible dictionaries
+        | one selected ordered path
         v
-TrackPad.compile_branch
-        |
-        v
-CompiledBranch(lattice, beam, source_index)
+(Lattice, Beam) -> TrackPad tracking / maps / optics
 ```
 
-## P0: Minimum Local Engine
+## Completed Simplification
 
-### Stable Interchange Contract
+- [x] Remove consumer-named APIs and special cases from TrackPad core.
+- [x] Keep native Julia tracking and optics independent of YAML or dictionaries.
+- [x] Reduce normal file I/O to `read_pals`, `read_madx`, and `write_pals`, each
+      producing or consuming native `Lattice` and `Beam` values.
+- [x] Keep the built-in PALS reader limited to a documented tracking subset;
+      complete language expansion belongs outside TrackPad.
+- [x] Represent the only structural boundary as `Lattice.periodic`.
+- [x] Reject ring-only tracking and optics operations for open lines.
+- [x] Provide `transfer_map` for either an open line or periodic ring.
+- [x] Publish coordinate, energy, multipole, bend, RF, loss, and boundary
+      conventions.
 
-- [ ] Version the in-memory interchange schema accepted by `compile_branch`.
-- [ ] Document coordinate order, units, energy semantics, charge convention,
-      bend geometry, RF phase, and normalized multipole strengths.
-- [ ] Return element names, source names, occurrence numbers, and TrackPad
-      indices in a bridge-friendly metadata structure.
-- [ ] Preserve EICViBE occurrence identity for repeated elements and diagnostics.
-- [ ] Add strict validation that reports all unsupported elements and parameters
-      before tracking starts.
-- [ ] Add a machine-readable TrackPad capability report for engine selection.
+Resolver stages are private implementation details; consumer adapters should
+use the returned `Lattice` and `Beam` directly.
 
-### Optics Result
+## P0: Tracking and Optics
 
-- [ ] Introduce a stable optics result containing:
-  - [ ] `s`, beta, alpha, gamma, and phase arrays.
-  - [ ] Closed-orbit arrays at requested reference points.
-  - [ ] First-order dispersion and dispersion-prime arrays.
-  - [ ] Tune, chromaticity, circumference, and reference-particle metadata.
-  - [ ] Transfer matrices at requested reference points.
-- [ ] Support periodic ring optics around the closed orbit.
-- [ ] Support linac Twiss propagation from supplied entrance conditions.
-- [ ] Define behavior for coupled lattices; reject them explicitly until a
-      coupled optics implementation is available.
-- [ ] Resolve and test the remaining MAD-X/TrackPad off-momentum `RBEND`
-      chromaticity convention difference.
+- [ ] Add entrance-conditioned transport-line Twiss results with the same field
+      conventions as periodic Twiss results.
+- [ ] Define coupled-lattice behavior: return coupled optics explicitly or
+      reject coupled requests before calculation.
+- [ ] Add transfer matrices at selected element indices without retaining every
+      intermediate matrix unless requested.
+- [ ] Resolve and test the MAD-X/TrackPad off-momentum `RBEND` chromaticity
+      convention difference.
+- [ ] Add scalar and batch coordinates at selected element indices.
+- [ ] Return stable per-particle loss state and first-loss element index.
+- [ ] Implement rectangular and elliptical aperture checks in CPU tracking.
+- [ ] Keep selected-point output and loss behavior consistent across scalar,
+      threaded CPU, KernelAbstractions CPU, CUDA, and Metal paths.
 
-### Tracking and Diagnostics
+## P0: Import Reliability
 
-- [ ] Add reference-point tracking for selected occurrence indices.
-- [ ] Add batch reference-point tracking without retaining every element result.
-- [ ] Return per-particle state and loss location, not only coordinate-limit loss.
-- [ ] Implement rectangular and elliptical aperture checks on the CPU path.
-- [ ] Add monitor reductions for centroid, RMS size, charge/transmission, and
-      covariance at BPM/profile-monitor occurrences.
-- [ ] Add chunked multi-turn tracking with a configurable diagnostic interval.
-- [ ] Ensure diagnostic output uses bounded memory for long ring sessions.
+- [ ] Add representative fixtures for the built-in PALS subset and external
+      parser handoff.
+- [ ] Add representative open-line and periodic-ring PALS fixtures.
+- [ ] Automate the existing EIC RCS MAD-X/TFS optics comparison.
+- [ ] Aggregate unsupported imported elements and parameters into one useful
+      error report rather than failing at only the first problem.
+- [ ] Keep production MAD-X placement and language expansion delegated to a
+      complete external parser.
 
-### Live Parameter Updates
+## P1: Time Dependence and Acceleration
 
-- [ ] Add an occurrence-aware element replacement API for immutable lattices.
-- [ ] Map PALS parameter-group names to TrackPad element fields in one place.
-- [ ] Support immediate updates to quadrupoles, sextupoles, correctors, bends,
-      RF cavities, and solenoids.
-- [ ] Support lazy per-turn parameter overlays without duplicating the lattice.
-- [ ] Rebuild or invalidate cached `GPULattice` data after relevant updates.
-- [ ] Return clear errors for updates that require unsupported physics.
+- [ ] Define schedules in terms of `TimeContext`, physical time, and turn.
+- [ ] Support coordinated magnet, RF, and reference-particle schedules.
+- [ ] Define reference energy, momentum, beta, and gamma evolution during
+      acceleration instead of assuming one immutable `Beam` for a full ramp.
+- [ ] Verify deterministic replay of scheduled tracking.
 
-## P1: Reliable Deployment
+## P1: Performance and Reliability
 
-### Python/Julia Bridge Support
+- [ ] Benchmark cold compilation, warm optics, scalar tracking, batch tracking,
+      and short interactive workloads on supported macOS and Linux systems.
+- [ ] Add automated CUDA and Metal acceptance tests for every advertised GPU
+      element and setting.
+- [ ] Reject unsupported physics consistently rather than approximating it
+      silently in production (`strict=true`).
 
-- [ ] Keep the public bridge limited to dictionaries, strings, scalars, and dense
-      arrays that JuliaCall can convert without custom Python wrappers.
-- [ ] Provide bridge entry points that do not expose internal parametric Julia
-      element types.
-- [ ] Add an API version and a startup health-check function.
-- [ ] Add warm-up functions for lattice compilation, optics, CPU tracking, and
-      optional GPU tracking.
-- [ ] Measure cold-start, warm-start, branch compilation, Twiss, and tracking
-      latency on macOS and Linux.
-- [ ] Evaluate a PackageCompiler sysimage after the bridge API stabilizes.
+## P2: Differentiation and High-Order Maps
 
-### Time-Dependent and Ramping Operation
-
-- [ ] Define the mapping from EICViBE beam-time and turn number to `TimeContext`.
-- [ ] Support coordinated magnet, RF, and reference-energy ramp schedules.
-- [ ] Define how `Beam` changes during acceleration rather than treating it as
-      immutable for an entire ramp.
-- [ ] Add ramp milestone and turn-index metadata to diagnostic results.
-- [ ] Verify deterministic replay of a scheduled ramp.
-
-### Reproducibility
-
-- [ ] Add provenance output with TrackPad version, Julia version, backend,
-      precision, integration settings, and enabled physics.
-- [ ] Define deterministic random-seed handling for error ensembles.
-- [ ] Add serialization for bridge inputs and diagnostic outputs used in
-      regression reports.
-
-## P2: Optional Accelerated Capabilities
-
-### GPU
-
-- [ ] Add reference-point and monitor reductions to GPU batch tracking.
-- [ ] Preserve particle state and first-loss location on GPU.
-- [ ] Add capability checks that distinguish CPU-only from GPU-supported
-      elements and settings.
-- [ ] Benchmark realistic EICViBE workloads, including many short interactive
-      jobs, not only million-particle throughput.
-- [ ] Add automated CUDA acceptance tests on the A100 server.
-
-### Differentiation and Maps
-
-- [ ] Complete Enzyme rules required by supported tracking and parameter-update
-      paths.
-- [ ] Expose stable batched Jacobian and Hessian-vector-product bridge functions.
-- [ ] Define derivatives with respect to initial coordinates separately from
+- [ ] Complete Enzyme support required by generally supported tracking paths.
+- [ ] Stabilize batched Jacobian, Hessian-vector-product, and Hessian APIs.
+- [ ] Distinguish derivatives with respect to initial coordinates from
       derivatives with respect to lattice parameters.
-- [ ] Keep PolySeries/TPSA optional and expose coefficients in plain dense arrays.
-- [ ] Add response-matrix and sensitivity APIs useful to EICViBE correction and
-      optimization workflows.
+- [ ] Keep PolySeries/TPSA optional and provide dense coefficient export.
+- [ ] Add response-matrix and sensitivity primitives; correction and
+      optimization workflows remain consumer responsibilities.
 
-## Verification Matrix
+## Consumer Responsibilities
 
-- [ ] Small FODO ring: compile, Twiss, closed orbit, chromaticity, tracking.
-- [ ] Representative linac: entrance Twiss propagation and monitor diagnostics.
-- [ ] EIC RCS: MAD-X import reference, PALS/EICViBE branch compilation, optics,
-      chromaticity, RF-off and RF-on behavior.
-- [ ] Repeated names: occurrence mapping, monitor selection, and parameter update.
-- [ ] Ramping ring: turn-dependent quadrupole, corrector, RF, and beam energy.
-- [ ] CPU batch parity with scalar tracking.
-- [ ] CUDA Float64 parity for every advertised GPU element.
-- [ ] Unsupported physics: deterministic rejection without silent approximation.
-- [ ] JuliaCall smoke test from a clean Python environment.
-
-## Default-Engine Acceptance Gates
-
-TrackPad is ready to be EICViBE's default local engine when:
-
-- [ ] A clean EICViBE installation can initialize TrackPad without manual Julia
-      package configuration.
-- [ ] Ring and linac core workflows pass through the EICViBE engine interface.
-- [ ] Required EICViBE `TwissData` fields are populated with documented units.
-- [ ] BPM diagnostics and occurrence-specific live updates work correctly.
-- [ ] Unsupported elements and requested physics are rejected before execution.
-- [ ] Warm interactive latency is measured and acceptable on supported desktops.
-- [ ] Cross-engine fixtures document expected TrackPad, MAD-X, XSuite, and BMAD
-      differences rather than hiding convention mismatches.
-- [ ] TrackPad's complete Julia suite and EICViBE's bridge suite pass in CI.
-
-## TrackPad Non-Goals
-
-- EICViBE retains ownership of multi-branch topology, forks, merging, control
-  models, session lifecycle, asynchronous transport, and GUI behavior.
-- TrackPad does not silently approximate unsupported collective effects,
-  apertures, radiation, or element models.
-- TrackPad does not need to replace XSuite or BMAD for high-fidelity studies.
-- Full PALS expansion remains delegated to PALSJulia/pals-cpp; TrackPad consumes
-  the selected expanded branch.
+- Multi-branch topology, forks, merging, route lifecycle, and source identity.
+- Engine registration, engine fallback, process startup, caching, and transport.
+- Conversion to consumer-specific optics, tracking, diagnostic, and error types.
+- Control-system mappings, live parameter orchestration, sessions, and UI state.
+- Consumer-specific provenance, serialization, plotting, and cross-engine
+  comparisons.
