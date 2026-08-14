@@ -1,0 +1,11 @@
+[deps]
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
+TrackPad = "e7bec244-bd43-46ed-8fec-7dc091d24617"
+
+[sources]
+TrackPad = {path = ".."}
+
+[compat]
+CairoMakie = "0.15"
+TrackPad = "0.1"
+julia = "1.10"

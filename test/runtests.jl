@@ -19,6 +19,7 @@ end
         include_isolated(:VerifyElements, "verify_elements.jl")
         include_isolated(:VerifyGPU, "verify_gpu.jl")
         include_isolated(:VerifyIO, "verify_io.jl")
+        include_isolated(:VerifyExamples, "verify_examples.jl")
     end
     @testset "TPSA" begin
         include_isolated(:VerifyTPSA, "verify_tpsa.jl")

@@ -28,6 +28,7 @@ makedocs(
             "Elements"        => "elements.md",
             "File I/O"        => "io.md",
             "GPU Acceleration" => "gpu.md",
+            "Examples"        => "examples.md",
         ],
         "AI Agent Guide" => "agent-guide.md",
         "API Reference" => "api.md",
