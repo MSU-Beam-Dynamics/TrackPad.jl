@@ -4,13 +4,15 @@
 Core particle tracking functions for TrackPad.jl.
 Implements allocation-free symplectic integrators using StaticArrays.
 
-Coordinate convention (matching JuTrack.jl / Accelerator Toolbox):
+TrackPad canonical coordinate convention:
 - r[1]: x  - Horizontal position
-- r[2]: px - Horizontal momentum (px/p0)
+- r[2]: px - Canonical horizontal momentum (Px/P0)
 - r[3]: y  - Vertical position  
-- r[4]: py - Vertical momentum (py/p0)
-- r[5]: z  - Path length difference (Δs or -c*Δt)
-- r[6]: δ  - Relative momentum deviation (Δp/p0)
+- r[4]: py - Canonical vertical momentum (Py/P0)
+- r[5]: z  - Canonical longitudinal coordinate s/β0-c*t = -c*(t-t0)
+- r[6]: δE - Relative energy deviation (E-E0)/(P0*c)
+
+The longitudinal canonical pair is (z, δE). See docs/src/conventions.md.
 """
 
 using LinearAlgebra
@@ -34,7 +36,8 @@ const KICK2 = -1.702414383919314656
 # =============================================================================
 # Global Settings (can be toggled)
 # =============================================================================
-# Use exact Hamiltonian pz = sqrt((1 + 2δ/β + δ² - px² - py²)) vs linearized pz = 1 + δ
+# Use exact energy-coordinate Hamiltonian
+# Ps/P0 = sqrt(1 + 2δE/β0 + δE² - px² - py²) versus its linearized map.
 USE_EXACT_HAMILTONIAN::Bool = true
 
 # =============================================================================
@@ -64,6 +67,23 @@ USE_EXACT_HAMILTONIAN::Bool = true
 """Guard for pxyz sqrt domain check (only meaningful for Real coords)."""
 @inline _safe_sqrt_pz(val::Real) = val > zero(val) ? sqrt(val) : zero(val)
 @inline _safe_sqrt_pz(val) = sqrt(val)
+
+"""Return `P/P0` for the stored energy deviation `delta_E`."""
+@inline function _momentum_norm(delta_e, beti)
+    return _safe_sqrt_pz(one(beti) + 2 * delta_e * beti + delta_e^2)
+end
+
+"""Return `d(delta_P)/d(delta_E)` for the exact energy-momentum conversion."""
+@inline function _momentum_jacobian(delta_e, beti)
+    return (beti + delta_e) / _momentum_norm(delta_e, beti)
+end
+
+"""Return the reference momentum-energy product `P0*c` from kinetic energy."""
+@inline function _reference_p0c(kinetic_energy::T, beti::T) where T
+    beta = inv(beti)
+    invgamma = sqrt(max(zero(T), one(T) - beta * beta))
+    return abs(kinetic_energy) * (one(T) + invgamma) / beta
+end
 
 """
     check_lost(r::AbstractVector) -> Bool
@@ -114,7 +134,7 @@ Uses exact Hamiltonian when USE_EXACT_HAMILTONIAN is true.
 """
 @inline function drift6(r::SVector{6,S}, L::T, beti::T=one(T)) where {T<:Real,S}
     if USE_EXACT_HAMILTONIAN
-        # Exact Hamiltonian: pz = sqrt(1 + 2δ/β + δ² - px² - py²)
+        # Exact longitudinal momentum for δE = (E-E0)/(P0*c).
         pz2 = one(T) + 2*r[6]*beti + r[6]^2 - r[2]^2 - r[4]^2
         if _check_pz2(pz2)
             return _nan_coords(T)
@@ -124,14 +144,14 @@ Uses exact Hamiltonian when USE_EXACT_HAMILTONIAN is true.
         y_new = r[3] + NormL * r[4]
         # Match JuTrack's in-place `+=` evaluation order. This avoids changing
         # finite-difference maps through cancellation at substep boundaries.
-        z_new = r[5] + (NormL * (beti + r[6]) - L * beti)
+        z_new = r[5] - (NormL * (beti + r[6]) - L * beti)
         return SVector(x_new, r[2], y_new, r[4], z_new, r[6])
     else
         # Linearized approximation: pz ≈ 1 + δ
         NormL = L / (one(T) + r[6])
         x_new = r[1] + NormL * r[2]
         y_new = r[3] + NormL * r[4]
-        z_new = r[5] + NormL * (r[2]^2 + r[4]^2) / (2*(one(T) + r[6]))
+        z_new = r[5] - NormL * (r[2]^2 + r[4]^2) / (2*(one(T) + r[6]))
         return SVector(x_new, r[2], y_new, r[4], z_new, r[6])
     end
 end
@@ -288,12 +308,12 @@ focusing effect from the curved trajectory.
     end
     
     # Apply kicks to momenta - note the irho term for the bend
-    # px -= L * (ReSum - (δ - x*irho) * irho)
+    # px -= L * (ReSum - (δ/β0 - x*irho) * irho)
     # py += L * ImSum
-    # z += L * irho * x * beti  (path length in bend)
-    px_new = r[2] - L * (ReSum - (r[6] - r[1] * irho) * irho)
+    # z -= L * irho * x * beti for z = s/β0-c*t.
+    px_new = r[2] - L * (ReSum - (r[6] * beti - r[1] * irho) * irho)
     py_new = r[4] + L * ImSum
-    z_new = r[5] + L * irho * r[1] * beti
+    z_new = r[5] - L * irho * r[1] * beti
     
     return SVector(r[1], px_new, r[3], py_new, z_new, r[6])
 end
@@ -527,17 +547,17 @@ end
     pass!(elem::RFCavity, r::SVector{6,T}, beti=1.0) -> SVector{6,T}
 
 Track particle through an RF Cavity using drift-kick-drift.
+The energy kick is normalized by the reference `P0*c` reconstructed from
+`elem.energy` (kinetic energy) and `beti`.
 """
 function pass!(elem::RFCavity{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
-    # Match JuTrack RFCA map (with nturn=0 in single-pass context).
-    beta = inv(beti)
     if elem.L > zero(T)
         r = drift6(r, elem.L / 2, beti)
     end
     if elem.energy > zero(T)
-        nv = elem.charge * elem.volt / elem.energy
-        phase = T(2pi) * elem.freq * ((r[5] - elem.lag) / T(C_LIGHT)) - elem.philag
-        delta_new = r[6] - nv * sin(phase) / (beta * beta)
+        kick = elem.charge * elem.volt / _reference_p0c(elem.energy, beti)
+        phase = -T(2pi) * elem.freq * ((r[5] + elem.lag) / T(C_LIGHT)) - elem.philag
+        delta_new = r[6] - kick * sin(phase)
         r = SVector(r[1], r[2], r[3], r[4], r[5], delta_new)
     end
     if elem.L > zero(T)
@@ -553,7 +573,8 @@ end
 """
     pass!(elem::Solenoid, r::SVector{6,T}, beti=1.0) -> SVector{6,T}
 
-Track particle through a Solenoid using exact matrix transformation.
+Track a particle through a Solenoid using the linear hard-edge matrix with the
+exact conversion from `δE` to normalized momentum.
 """
 function pass!(elem::Solenoid{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     # Apply entrance misalignment
@@ -568,8 +589,9 @@ function pass!(elem::Solenoid{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,
     if iszero(ks)
         r = drift6(r, L, beti)
     else
-        # Match JuTrack SOLENOID map (linearized p_norm convention).
-        p_norm = inv(one(T) + r[6])
+        momentum = _momentum_norm(r[6], beti)
+        p_norm = inv(momentum)
+        momentum_jacobian = (beti + r[6]) * p_norm
         x = r[1]
         xpr = r[2] * p_norm
         y = r[3]
@@ -582,7 +604,9 @@ function pass!(elem::Solenoid{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,
         px_new = (-x * H * Cn * Sn + xpr * Cn * Cn - y * H * Sn * Sn + ypr * Cn * Sn) / p_norm
         y_new = -x * Cn * Sn - xpr * Sn * Sn / H + y * Cn * Cn + ypr * Cn * Sn / H
         py_new = (x * H * Sn * Sn - xpr * Cn * Sn - y * Cn * Sn * H + ypr * Cn * Cn) / p_norm
-        z_new = r[5] + L * (H * H * (x * x + y * y) + 2 * H * (xpr * y - ypr * x) + xpr * xpr + ypr * ypr) / 2
+        z_new = r[5] - momentum_jacobian * L *
+                (H * H * (x * x + y * y) +
+                 2 * H * (xpr * y - ypr * x) + xpr * xpr + ypr * ypr) / 2
 
         r = SVector(x_new, px_new, y_new, py_new, z_new, r[6])
     end
@@ -612,10 +636,11 @@ function pass!(elem::Corrector{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N
         r = elem.r1 * r
     end
     
-    # Match JuTrack CORRECTOR map.
-    p_norm = inv(one(T) + r[6])
+    momentum = _momentum_norm(r[6], beti)
+    p_norm = inv(momentum)
+    momentum_jacobian = (beti + r[6]) * p_norm
     NormL = elem.L * p_norm
-    z_new = r[5] + NormL * p_norm *
+    z_new = r[5] - momentum_jacobian * NormL * p_norm *
             (elem.xkick^2 / 3 + elem.ykick^2 / 3 +
              r[2]^2 + r[4]^2 + r[2] * elem.xkick + r[4] * elem.ykick) / 2
     x_new = r[1] + NormL * (r[2] + elem.xkick / 2)
@@ -739,17 +764,18 @@ end
 # =============================================================================
 
 """
-    pxyz(dp1, px, py) -> T
+    pxyz(momentum, px, py) -> T
 
-Helper for exact bend Hamiltonian: pz = sqrt(dp1^2 - px^2 - py^2)
+Helper for exact bend Hamiltonian: `pz = sqrt(momentum^2 - px^2 - py^2)`.
+Here `momentum` is `P/P0`, not `1/beta0 + delta_E`.
 """
-@inline function pxyz(dp1::T, px::T, py::T) where T
-    val = dp1^2 - px^2 - py^2
+@inline function pxyz(momentum::T, px::T, py::T) where T
+    val = momentum^2 - px^2 - py^2
     return _safe_sqrt_pz(val)
 end
 # CTPS / non-Real overload (no comparison needed)
-@inline function pxyz(dp1, px, py)
-    return sqrt(dp1^2 - px^2 - py^2)
+@inline function pxyz(momentum, px, py)
+    return sqrt(momentum^2 - px^2 - py^2)
 end
 
 """
@@ -762,17 +788,18 @@ Rotation in free space (Forest 10.26).
         return r
     end
     
-    dp1 = beti + r[6]
+    energy_factor = beti + r[6]
+    momentum = _momentum_norm(r[6], beti)
     c = cos(phi)
     s = sin(phi)
-    pz = pxyz(dp1, r[2], r[4])
+    pz = pxyz(momentum, r[2], r[4])
     
     p = c * pz - s * r[2]
     px_new = s * pz + c * r[2]
     x_new = r[1] * pz / p
     
     y_new = r[3] + r[1] * r[4] * s / p
-    z_new = r[5] + dp1 * r[1] * s / p
+    z_new = r[5] - energy_factor * r[1] * s / p
     
     return SVector(x_new, px_new, y_new, r[4], z_new, r[6])
 end
@@ -784,8 +811,9 @@ Hard-edge bend fringe (Forest 13.13).
 """
 @inline function bend_fringe(r::SVector{6,S}, irho::T, gK::T, beti::T) where {T<:Real,S}
     b0 = irho
-    dp1 = beti + r[6]
-    pz = pxyz(dp1, r[2], r[4])
+    energy_factor = beti + r[6]
+    momentum = _momentum_norm(r[6], beti)
+    pz = pxyz(momentum, r[2], r[4])
     px = r[2]
     py = r[4]
     
@@ -832,7 +860,7 @@ Hard-edge bend fringe (Forest 13.13).
                 
     dpy = dpy_num / denom
     
-    dd_num = (b0 * dp1 * (px * pz4 * (py2 - pz2) + b0 * gK * 
+    dd_num = (b0 * energy_factor * (px * pz4 * (py2 - pz2) + b0 * gK *
               (-(pz4 * py2z2_sq) + px2^2 * (3*py2*pz2 + 2*pz4) + 
               px2 * (3*py6 + 8*py4*pz2 + 7*py2*pz4 + pz6)))) * powsec
               
@@ -844,7 +872,7 @@ Hard-edge bend fringe (Forest 13.13).
     dct = 0.5 * dd * yf^2
     dpyf = phi * yf
     
-    return SVector(r[1] + dxf, r[2], yf, r[4] - dpyf, r[5] - dct, r[6])
+    return SVector(r[1] + dxf, r[2], yf, r[4] - dpyf, r[5] + dct, r[6])
 end
 
 """
@@ -857,11 +885,12 @@ Ideal wedge map (Forest 12.41).
         return r
     end
     
-    dp1 = beti + r[6]
+    energy_factor = beti + r[6]
+    momentum = _momentum_norm(r[6], beti)
     c = cos(theta)
     s = sin(theta)
-    pz = pxyz(dp1, r[2], r[4])
-    d2 = pxyz(dp1, 0.0, r[4])
+    pz = pxyz(momentum, r[2], r[4])
+    d2 = pxyz(momentum, 0.0, r[4])
     
     px_new = r[2] * c + (pz - rhoinv * r[1]) * s
     
@@ -874,11 +903,11 @@ Ideal wedge map (Forest 12.41).
     dasin = asin(val1) - asin(val2)
     
     num = r[1] * (r[2] * sin(2*theta) + s^2 * (2*pz - rhoinv * r[1]))
-    den = pxyz(dp1, px_new, r[4]) + pz * c - r[2] * s
+    den = pxyz(momentum, px_new, r[4]) + pz * c - r[2] * s
     
     x_new = r[1] * c + num / den
     y_new = r[3] + r[4] * (theta / rhoinv + dasin / rhoinv)
-    z_new = r[5] + dp1 / rhoinv * (theta + dasin)
+    z_new = r[5] - energy_factor / rhoinv * (theta + dasin)
     
     return SVector(x_new, px_new, y_new, r[4], z_new, r[6])
 end
@@ -889,8 +918,9 @@ end
 Exact bend body map (Forest 12.18).
 """
 @inline function exact_bend_body(r::SVector{6,S}, irho::T, L::T, beti::T) where {T<:Real,S}
-    dp1 = beti + r[6]
-    pz = pxyz(dp1, r[2], r[4])
+    energy_factor = beti + r[6]
+    momentum = _momentum_norm(r[6], beti)
+    pz = pxyz(momentum, r[2], r[4])
     
     if abs(irho) < 1e-6
         # Drift limit
@@ -900,7 +930,7 @@ Exact bend body map (Forest 12.18).
             r[2],
             r[3] + r[4] * NormL,
             r[4],
-            r[5] + NormL * dp1 - L * beti,
+            r[5] - (NormL * energy_factor - L * beti),
             r[6]
         )
     else
@@ -910,7 +940,7 @@ Exact bend body map (Forest 12.18).
         
         px_new = r[2] * cs + pzmx * sn
         
-        d2 = pxyz(dp1, 0.0, r[4])
+        d2 = pxyz(momentum, 0.0, r[4])
         val1 = r[2] / d2
         val2 = px_new / d2
         val1 = _safe_clamp(val1, -one(T), one(T))
@@ -918,9 +948,9 @@ Exact bend body map (Forest 12.18).
         
         dasin = L + (asin(val1) - asin(val2)) / irho
         
-        x_new = (pxyz(dp1, px_new, r[4]) - pzmx * cs + r[2] * sn - 1) / irho
+        x_new = (pxyz(momentum, px_new, r[4]) - pzmx * cs + r[2] * sn - 1) / irho
         y_new = r[3] + r[4] * dasin
-        z_new = r[5] + dp1 * dasin - L * beti
+        z_new = r[5] - (energy_factor * dasin - L * beti)
         
         return SVector(x_new, px_new, y_new, r[4], z_new, r[6])
     end
@@ -1106,12 +1136,15 @@ end
 # Linear Bend (LBend)
 # =============================================================================
 
-@inline function _lbend_body(r::SVector{6,T}, L::T, grd::T, b_angle::T, by_error::T) where T
+@inline function _lbend_body(r::SVector{6,T}, L::T, grd::T, b_angle::T,
+                             by_error::T, beti::T) where T
     if iszero(L)
         return r
     end
 
-    p_norm = inv(one(T) + r[6])
+    momentum = _momentum_norm(r[6], beti)
+    p_norm = inv(momentum)
+    momentum_jacobian = (beti + r[6]) * p_norm
     Kx = b_angle / L
     G1 = (Kx * Kx + grd) * p_norm
     G2 = -grd * p_norm
@@ -1150,8 +1183,8 @@ end
     xpr = r[2] * p_norm
     y = r[3]
     ypr = r[4] * p_norm
-    delta = r[6]
-    dterm = delta * p_norm - by_error
+    delta_p = momentum - one(T)
+    dterm = delta_p * p_norm - by_error
 
     x_new = MHD * x + M12 * xpr
     px_new = (M21 * x + MHD * xpr) / p_norm
@@ -1170,14 +1203,15 @@ end
     y_new = MVD * y + M34 * ypr
     py_new = (M43 * y + MVD * ypr) / p_norm
 
-    z_new = r[5] + xpr * xpr * (L + MHD * M12) / 4
+    longitudinal_increment = -xpr * xpr * (L + MHD * M12) / 4
     if abs(G1) >= tol
-        z_new += (L - MHD * M12) * (x * x * G1 + dterm * dterm * Kx * Kx / G1 - 2 * x * Kx * dterm) / 4
-        z_new += M12 * M21 * (x * xpr - xpr * dterm * Kx / G1) / 2
-        z_new += Kx * x * M12 + xpr * (one(T) - MHD) * Kx / G1 + dterm * (L - M12) * Kx * Kx / G1
+        longitudinal_increment -= (L - MHD * M12) * (x * x * G1 + dterm * dterm * Kx * Kx / G1 - 2 * x * Kx * dterm) / 4
+        longitudinal_increment -= M12 * M21 * (x * xpr - xpr * dterm * Kx / G1) / 2
+        longitudinal_increment -= Kx * x * M12 + xpr * (one(T) - MHD) * Kx / G1 + dterm * (L - M12) * Kx * Kx / G1
     end
-    z_new += ((L - MVD * M34) * y * y * G2 + ypr * ypr * (L + MVD * M34)) / 4
-    z_new += M34 * M43 * y * ypr / 2
+    longitudinal_increment -= ((L - MVD * M34) * y * y * G2 + ypr * ypr * (L + MVD * M34)) / 4
+    longitudinal_increment -= M34 * M43 * y * ypr / 2
+    z_new = r[5] + momentum_jacobian * longitudinal_increment
 
     return SVector{6, T}(x_new, px_new, y_new, py_new, z_new, r[6])
 end
@@ -1193,7 +1227,7 @@ function pass!(elem::LBend{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     end
     irho = elem.angle / elem.L
     r = edge_fringe_entrance(r, irho, elem.e1, elem.fint1, elem.full_gap, 1)
-    r = _lbend_body(r, elem.L, elem.K, elem.angle, elem.by_error)
+    r = _lbend_body(r, elem.L, elem.K, elem.angle, elem.by_error, beti)
     r = edge_fringe_exit(r, irho, elem.e2, elem.fint2, elem.full_gap, 1)
 
     if !iszero(elem.r2)
@@ -1241,7 +1275,7 @@ end
     x_new = x / (cosine * denominator)
     px_new = cosine * px + sine * pz
     y_new = y + tangent * x * py / (pz * denominator)
-    z_new = z + tangent * x * (beta_inverse + delta) / (pz * denominator)
+    z_new = z - tangent * x * (beta_inverse + delta) / (pz * denominator)
     return x_new, px_new, y_new, py, z_new, delta
 end
 
@@ -1269,7 +1303,7 @@ end
     pz = sqrt(pz_squared)
     x -= x_offset + z_offset * px / pz
     y -= y_offset + z_offset * py / pz
-    z += z_offset * (beta_inverse + delta) / pz - T(C_LIGHT) * t_offset
+    z += z_offset * (beta_inverse + delta) / pz + T(C_LIGHT) * t_offset
 
     if !iszero(x_pitch)
         rotated_y, rotated_py, rotated_x, rotated_px, z, delta =
@@ -1360,7 +1394,7 @@ function pass!(elem::YRotation{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N
     x_new = r[1] / (ca * ptt)
     px_new = ca * r[2] + sa * pz
     y_new = r[3] + ta * r[1] * r[4] / (pz * ptt)
-    z_new = r[5] + ta * r[1] * (beti + r[6]) / (pz * ptt)
+    z_new = r[5] - ta * r[1] * (beti + r[6]) / (pz * ptt)
     return SVector{6, T}(x_new, px_new, y_new, r[4], z_new, r[6])
 end
 
@@ -1477,12 +1511,15 @@ end
     return ay, aypx
 end
 
-@inline function _wig_map_2nd(elem::Wiggler{T,N,V}, r::SVector{6,T}, dl::T, Zw::T, Aw::T, Po::T) where {T,N,V}
+@inline function _wig_map_2nd(elem::Wiggler{T,N,V}, r::SVector{6,T}, dl::T,
+                              Zw::T, Aw::T, Po::T, beti::T) where {T,N,V}
     delta = r[6]
-    inv1pd = inv(one(T) + delta)
-    dld = dl * inv1pd
+    momentum = _momentum_norm(delta, beti)
+    inv_momentum = inv(momentum)
+    momentum_jacobian = (beti + delta) * inv_momentum
+    dld = dl * inv_momentum
     dl2 = dl / 2
-    dl2d = dl2 * inv1pd
+    dl2d = dl2 * inv_momentum
 
     Zw += dl2
     x = r[1]
@@ -1495,7 +1532,7 @@ end
     px -= aypx
     py -= ay
     y += dl2d * py
-    z += (dl2d / 2) * py^2 * inv1pd
+    z -= momentum_jacobian * (dl2d / 2) * py^2 * inv_momentum
 
     ay, aypx = _wig_ay_aypx(elem, SVector{6,T}(x, px, y, py, z, delta), Zw, Aw, Po)
     px += aypx
@@ -1505,7 +1542,7 @@ end
     px -= ax
     py -= axpy
     x += dld * px
-    z += (dld / 2) * px^2 * inv1pd
+    z -= momentum_jacobian * (dld / 2) * px^2 * inv_momentum
 
     ax, axpy = _wig_ax_axpy(elem, SVector{6,T}(x, px, y, py, z, delta), Zw, Aw, Po)
     px += ax
@@ -1515,7 +1552,7 @@ end
     px -= aypx
     py -= ay
     y += dl2d * py
-    z += (dl2d / 2) * py^2 * inv1pd
+    z -= momentum_jacobian * (dl2d / 2) * py^2 * inv_momentum
 
     ay, aypx = _wig_ay_aypx(elem, SVector{6,T}(x, px, y, py, z, delta), Zw, Aw, Po)
     px += aypx
@@ -1525,7 +1562,7 @@ end
     return SVector{6,T}(x, px, y, py, z, delta), Zw
 end
 
-@inline function _wig_pass_4th(elem::Wiggler{T,N,V}, r::SVector{6,T}) where {T,N,V}
+@inline function _wig_pass_4th(elem::Wiggler{T,N,V}, r::SVector{6,T}, beti::T) where {T,N,V}
     PN = elem.Nsteps
     Nw = round(Int, elem.L / elem.lw)
     Nstep = PN * max(1, Nw)
@@ -1538,9 +1575,9 @@ end
     Zw = zero(T)
 
     @inbounds for _ in 1:Nstep
-        r, Zw = _wig_map_2nd(elem, r, dl1, Zw, Aw, Po)
-        r, Zw = _wig_map_2nd(elem, r, dl0, Zw, Aw, Po)
-        r, Zw = _wig_map_2nd(elem, r, dl1, Zw, Aw, Po)
+        r, Zw = _wig_map_2nd(elem, r, dl1, Zw, Aw, Po, beti)
+        r, Zw = _wig_map_2nd(elem, r, dl0, Zw, Aw, Po, beti)
+        r, Zw = _wig_map_2nd(elem, r, dl1, Zw, Aw, Po, beti)
     end
     return r
 end
@@ -1616,7 +1653,7 @@ end
     return SVector{6,T}(r[1], r[2] * scale, r[3], r[4] * scale, r[5], r[6] + dDelta)
 end
 
-@inline function _wig_pass_4th_rad(elem::Wiggler{T,N,V}, r::SVector{6,T}) where {T,N,V}
+@inline function _wig_pass_4th_rad(elem::Wiggler{T,N,V}, r::SVector{6,T}, beti::T) where {T,N,V}
     PN = elem.Nsteps
     Nw = round(Int, elem.L / elem.lw)
     Nstep = PN * max(1, Nw)
@@ -1638,9 +1675,9 @@ end
     r = SVector{6,T}(r[1], r[2] + ax, r[3], r[4] + ay, r[5], r[6])
 
     @inbounds for _ in 1:Nstep
-        r, Zw = _wig_map_2nd(elem, r, dl1, Zw, Aw, Po)
-        r, Zw = _wig_map_2nd(elem, r, dl0, Zw, Aw, Po)
-        r, Zw = _wig_map_2nd(elem, r, dl1, Zw, Aw, Po)
+        r, Zw = _wig_map_2nd(elem, r, dl1, Zw, Aw, Po, beti)
+        r, Zw = _wig_map_2nd(elem, r, dl0, Zw, Aw, Po, beti)
+        r, Zw = _wig_map_2nd(elem, r, dl1, Zw, Aw, Po, beti)
 
         ax, _ = _wig_ax_axpy(elem, r, Zw, Aw, Po)
         ay, _ = _wig_ay_aypx(elem, r, Zw, Aw, Po)
@@ -1660,9 +1697,9 @@ function pass!(elem::Wiggler{T,N,V}, r::SVector{6,S}, beti::T=one(T)) where {T,N
     end
 
     if elem.rad == 1
-        r = _wig_pass_4th_rad(elem, r)
+        r = _wig_pass_4th_rad(elem, r, beti)
     else
-        r = _wig_pass_4th(elem, r)
+        r = _wig_pass_4th(elem, r, beti)
     end
 
     if !iszero(elem.r2)
@@ -1678,14 +1715,15 @@ end
 function pass!(elem::CrabCavity{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     volt = elem.volt * (one(T) + elem.errors[1])
     phi = elem.phi + elem.errors[2]
-    E = max(abs(elem.energy), eps(T))
-    ang = elem.k * r[5] + phi
+    p0c = max(_reference_p0c(elem.energy, beti), eps(T))
+    ang = -elem.k * r[5] + phi
 
     if elem.L > zero(T)
         r = drift6(r, elem.L / 2, beti)
     end
-    px_new = r[2] + (volt / E) * sin(ang * beti)
-    delta_new = r[6] - (elem.k * volt / E * beti) * r[1] * cos(ang * beti)
+    kick = elem.charge * volt / p0c
+    px_new = r[2] + kick * sin(ang)
+    delta_new = r[6] - elem.k * kick * r[1] * cos(ang)
     r = SVector{6, T}(r[1], px_new, r[3], r[4], r[5], delta_new)
     if elem.L > zero(T)
         r = drift6(r, elem.L / 2, beti)
@@ -1694,14 +1732,9 @@ function pass!(elem::CrabCavity{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,
 end
 
 function pass!(elem::AccelCavity{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
-    beta = inv(beti)
-    beta2 = beta * beta
-    if beta2 <= eps(T)
-        return r
-    end
-    E = max(abs(elem.energy), eps(T))
-    sv = sin(elem.k * r[5] + elem.phis) - sin(elem.phis)
-    delta_new = r[6] + (elem.volt / (beta2 * E)) * sv
+    p0c = max(_reference_p0c(elem.energy, beti), eps(T))
+    sv = sin(-elem.k * r[5] + elem.phis) - sin(elem.phis)
+    delta_new = r[6] + (elem.charge * elem.volt / p0c) * sv
     return SVector{6, T}(r[1], r[2], r[3], r[4], r[5], delta_new)
 end
 
@@ -1727,7 +1760,7 @@ function pass!(elem::LongitudinalRFMap{T,E}, r::SVector{6,T}, beti::T=one(T)) wh
     h = T(_rf_h(elem.rf))
     beta = inv(beti)
     eta = elem.alphac - (one(T) - beta * beta)
-    z_new = r[5] - (T(2pi) * h * eta / k) * r[6]
+    z_new = r[5] - (T(2pi) * h * eta * beti / k) * r[6]
     return SVector{6, T}(r[1], r[2], r[3], r[4], z_new, r[6])
 end
 
@@ -1735,19 +1768,19 @@ function pass!(elem::LorentzBoost{T,N}, r::SVector{6,S}, beti::T=one(T)) where {
     if elem.mode != 0
         return r
     end
-    invcos = inv(elem.cosang)
-    x_new = r[1] + elem.tanang * r[5]
-    delta_new = r[6] - elem.tanang * r[2]
-    return SVector{6, T}(x_new, r[2] * invcos, r[3], r[4] * invcos, r[5] * invcos, delta_new)
+    x_new = r[1] - elem.tanang * r[5]
+    z_new = r[5] / elem.cosang
+    delta_new = elem.tanang * elem.cosang * r[2] + elem.cosang * r[6]
+    return SVector{6, T}(x_new, r[2], r[3], r[4], z_new, delta_new)
 end
 
 function pass!(elem::InvLorentzBoost{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     if elem.mode != 0
         return r
     end
-    x_new = r[1] - elem.sinang * r[5]
-    delta_new = r[6] + elem.sinang * r[2]
-    return SVector{6, T}(x_new, r[2] * elem.cosang, r[3], r[4] * elem.cosang, r[5] * elem.cosang, delta_new)
+    x_new = r[1] + elem.sinang * r[5]
+    delta_new = (r[6] - elem.sinang * r[2]) / elem.cosang
+    return SVector{6, T}(x_new, r[2], r[3], r[4], r[5] * elem.cosang, delta_new)
 end
 
 # =============================================================================
@@ -1795,7 +1828,7 @@ function pass!(elem::LongitudinalRLCWake{T,N}, r::SVector{6,S}, beti::T=one(T)) 
     if iszero(elem.scale)
         return r
     end
-    t = min(r[5] / T(C_LIGHT), zero(T))
+    t = min(-r[5] / T(C_LIGHT), zero(T))
     delta_new = r[6] - elem.scale * wakefieldfunc_RLCWake(elem, t)
     return SVector{6, T}(r[1], r[2], r[3], r[4], r[5], delta_new)
 end
@@ -1804,7 +1837,7 @@ function pass!(elem::LongitudinalWake{T,N,V}, r::SVector{6,S}, beti::T=one(T)) w
     if iszero(elem.scale)
         return r
     end
-    t = r[5] / T(C_LIGHT)
+    t = -r[5] / T(C_LIGHT)
     delta_new = r[6] - elem.scale * wakefieldfunc(elem, t)
     return SVector{6, T}(r[1], r[2], r[3], r[4], r[5], delta_new)
 end

@@ -60,7 +60,7 @@ end
     NormL = L / sqrt(pz2)
     x_new = r[1] + NormL * r[2]
     y_new = r[3] + NormL * r[4]
-    z_new = r[5] + NormL * (beti + r[6]) - L * beti
+    z_new = r[5] - (NormL * (beti + r[6]) - L * beti)
     return SVector{6,CTPS{T}}(x_new, r[2], y_new, r[4], z_new, r[6])
 end
 
@@ -69,7 +69,7 @@ end
 #     NormL = L / (CTPS(one(T)) + r[6])
 #     x_new = r[1] + NormL * r[2]
 #     y_new = r[3] + NormL * r[4]
-#     z_new = r[5] + NormL * (r[2]^2 + r[4]^2) / (2 * (CTPS(one(T)) + r[6]))
+#     z_new = r[5] - NormL * (r[2]^2 + r[4]^2) / (2 * (CTPS(one(T)) + r[6]))
 #     return SVector{6,CTPS{T}}(x_new, r[2], y_new, r[4], z_new, r[6])
 # end
 
@@ -103,9 +103,9 @@ end
         ImSum = ImSum * r[1] + ReSum * r[3] + polynom_a[i]
         ReSum = ReSumTemp
     end
-    px_new = r[2] - L * (ReSum - (r[6] - r[1] * irho) * irho)
+    px_new = r[2] - L * (ReSum - (r[6] * beti - r[1] * irho) * irho)
     py_new = r[4] + L * ImSum
-    z_new  = r[5] + L * irho * r[1] * beti
+    z_new  = r[5] - L * irho * r[1] * beti
     return SVector{6,CTPS{T}}(r[1], px_new, r[3], py_new, z_new, r[6])
 end
 
@@ -327,14 +327,13 @@ end
 # ── RFCavity ──
 
 function TrackPad.pass!(elem::RFCavity{T,N}, r::SVector{6,CTPS{T}}, beti::T) where {T,N}
-    beta = inv(beti)
     if elem.L > zero(T)
         r = drift6_tpsa(r, elem.L / 2, beti)
     end
     if elem.energy > zero(T)
-        nv = elem.volt / elem.energy
-        phase = T(2pi) * elem.freq * ((r[5] - elem.lag) / T(TrackPad.C_LIGHT)) - elem.philag
-        delta_new = r[6] - nv * sin(phase) / (beta * beta)
+        kick = elem.charge * elem.volt / TrackPad._reference_p0c(elem.energy, beti)
+        phase = -T(2pi) * elem.freq * ((r[5] + elem.lag) / T(TrackPad.C_LIGHT)) - elem.philag
+        delta_new = r[6] - kick * sin(phase)
         r = SVector{6,CTPS{T}}(r[1], r[2], r[3], r[4], r[5], delta_new)
     end
     if elem.L > zero(T)
@@ -354,7 +353,9 @@ function TrackPad.pass!(elem::Solenoid{T,N}, r::SVector{6,CTPS{T}}, beti::T) whe
     if iszero(ks)
         r = drift6_tpsa(r, L, beti)
     else
-        p_norm = inv(CTPS(one(T)) + r[6])
+        momentum = TrackPad._momentum_norm(r[6], beti)
+        p_norm = inv(momentum)
+        momentum_jacobian = (beti + r[6]) * p_norm
         x   = r[1]
         xpr = r[2] * p_norm
         y   = r[3]
@@ -367,7 +368,8 @@ function TrackPad.pass!(elem::Solenoid{T,N}, r::SVector{6,CTPS{T}}, beti::T) whe
         px_new = (-x*H*C*S + xpr*C*C - y*H*S*S + ypr*C*S) / p_norm
         y_new  = -x*C*S - xpr*S*S/H + y*C*C + ypr*C*S/H
         py_new = (x*H*S*S - xpr*C*S - y*C*S*H + ypr*C*C) / p_norm
-        z_new  = r[5] + L*(H*H*(x*x + y*y) + 2*H*(xpr*y - ypr*x) + xpr*xpr + ypr*ypr) / 2
+        z_new  = r[5] - momentum_jacobian * L *
+                 (H*H*(x*x + y*y) + 2*H*(xpr*y - ypr*x) + xpr*xpr + ypr*ypr) / 2
 
         r = SVector{6,CTPS{T}}(x_new, px_new, y_new, py_new, z_new, r[6])
     end
@@ -381,9 +383,11 @@ end
 function TrackPad.pass!(elem::Corrector{T,N}, r::SVector{6,CTPS{T}}, beti::T) where {T,N}
     r = enter_misalignment(r, elem.t1, elem.r1)
 
-    p_norm = inv(CTPS(one(T)) + r[6])
+    momentum = TrackPad._momentum_norm(r[6], beti)
+    p_norm = inv(momentum)
+    momentum_jacobian = (beti + r[6]) * p_norm
     NormL = elem.L * p_norm
-    z_new = r[5] + NormL * p_norm *
+    z_new = r[5] - momentum_jacobian * NormL * p_norm *
             (elem.xkick^2 / 3 + elem.ykick^2 / 3 +
              r[2]^2 + r[4]^2 + r[2] * elem.xkick + r[4] * elem.ykick) / 2
     x_new  = r[1] + NormL * (r[2] + elem.xkick / 2)
@@ -512,7 +516,7 @@ function TrackPad.pass!(elem::YRotation{T,N}, r::SVector{6,CTPS{T}}, beti::T) wh
     x_new  = r[1] / (ca * ptt)
     px_new = ca * r[2] + sa * pz
     y_new  = r[3] + ta * r[1] * r[4] / (pz * ptt)
-    z_new  = r[5] + ta * r[1] * (beti + r[6]) / (pz * ptt)
+    z_new  = r[5] - ta * r[1] * (beti + r[6]) / (pz * ptt)
     return SVector{6,CTPS{T}}(x_new, px_new, y_new, r[4], z_new, r[6])
 end
 
@@ -521,14 +525,15 @@ end
 function TrackPad.pass!(elem::CrabCavity{T,N}, r::SVector{6,CTPS{T}}, beti::T) where {T,N}
     volt = elem.volt * (one(T) + elem.errors[1])
     phi = elem.phi + elem.errors[2]
-    E = max(abs(elem.energy), eps(T))
-    ang = elem.k * r[5] + phi
+    p0c = max(TrackPad._reference_p0c(elem.energy, beti), eps(T))
+    ang = -elem.k * r[5] + phi
 
     if elem.L > zero(T)
         r = drift6_tpsa(r, elem.L / 2, beti)
     end
-    px_new    = r[2] + (volt / E) * sin(ang * beti)
-    delta_new = r[6] - (elem.k * volt / E * beti) * r[1] * cos(ang * beti)
+    kick = elem.charge * volt / p0c
+    px_new    = r[2] + kick * sin(ang)
+    delta_new = r[6] - elem.k * kick * r[1] * cos(ang)
     r = SVector{6,CTPS{T}}(r[1], px_new, r[3], r[4], r[5], delta_new)
     if elem.L > zero(T)
         r = drift6_tpsa(r, elem.L / 2, beti)
@@ -539,14 +544,9 @@ end
 # ── AccelCavity ──
 
 function TrackPad.pass!(elem::AccelCavity{T,N}, r::SVector{6,CTPS{T}}, beti::T) where {T,N}
-    beta = inv(beti)
-    beta2 = beta * beta
-    if beta2 <= eps(T)
-        return r
-    end
-    E = max(abs(elem.energy), eps(T))
-    sv = sin(elem.k * r[5] + elem.phis) - sin(elem.phis)
-    delta_new = r[6] + (elem.volt / (beta2 * E)) * sv
+    p0c = max(TrackPad._reference_p0c(elem.energy, beti), eps(T))
+    sv = sin(-elem.k * r[5] + elem.phis) - sin(elem.phis)
+    delta_new = r[6] + (elem.charge * elem.volt / p0c) * sv
     return SVector{6,CTPS{T}}(r[1], r[2], r[3], r[4], r[5], delta_new)
 end
 
@@ -560,7 +560,7 @@ function TrackPad.pass!(elem::LongitudinalRFMap{T,E}, r::SVector{6,CTPS{T}}, bet
     h = T(TrackPad._rf_h(elem.rf))
     beta = inv(beti)
     eta = elem.alphac - (one(T) - beta * beta)
-    z_new = r[5] - (T(2pi) * h * eta / k) * r[6]
+    z_new = r[5] - (T(2pi) * h * eta * beti / k) * r[6]
     return SVector{6,CTPS{T}}(r[1], r[2], r[3], r[4], z_new, r[6])
 end
 
@@ -570,10 +570,10 @@ function TrackPad.pass!(elem::LorentzBoost{T,N}, r::SVector{6,CTPS{T}}, beti::T)
     if elem.mode != 0
         return r
     end
-    invcos = inv(elem.cosang)
-    x_new     = r[1] + elem.tanang * r[5]
-    delta_new = r[6] - elem.tanang * r[2]
-    return SVector{6,CTPS{T}}(x_new, r[2]*invcos, r[3], r[4]*invcos, r[5]*invcos, delta_new)
+    x_new     = r[1] - elem.tanang * r[5]
+    z_new     = r[5] / elem.cosang
+    delta_new = elem.tanang * elem.cosang * r[2] + elem.cosang * r[6]
+    return SVector{6,CTPS{T}}(x_new, r[2], r[3], r[4], z_new, delta_new)
 end
 
 # ── InvLorentzBoost ──
@@ -582,10 +582,10 @@ function TrackPad.pass!(elem::InvLorentzBoost{T,N}, r::SVector{6,CTPS{T}}, beti:
     if elem.mode != 0
         return r
     end
-    x_new     = r[1] - elem.sinang * r[5]
-    delta_new = r[6] + elem.sinang * r[2]
-    return SVector{6,CTPS{T}}(x_new, r[2]*elem.cosang, r[3], r[4]*elem.cosang,
-                               r[5]*elem.cosang, delta_new)
+    x_new     = r[1] + elem.sinang * r[5]
+    delta_new = (r[6] - elem.sinang * r[2]) / elem.cosang
+    return SVector{6,CTPS{T}}(x_new, r[2], r[3], r[4],
+                              r[5]*elem.cosang, delta_new)
 end
 
 # ── StrongThinGaussianBeam ──
@@ -631,7 +631,7 @@ function TrackPad.pass!(elem::LongitudinalRLCWake{T,N}, r::SVector{6,CTPS{T}}, b
     if iszero(elem.scale)
         return r
     end
-    t = min(cst(r[5]) / T(TrackPad.C_LIGHT), zero(T))
+    t = min(-cst(r[5]) / T(TrackPad.C_LIGHT), zero(T))
     delta_new = r[6] - elem.scale * TrackPad.wakefieldfunc_RLCWake(elem, t)
     return SVector{6,CTPS{T}}(r[1], r[2], r[3], r[4], r[5], delta_new)
 end
@@ -642,7 +642,7 @@ function TrackPad.pass!(elem::LongitudinalWake{T,N,V}, r::SVector{6,CTPS{T}}, be
     if iszero(elem.scale)
         return r
     end
-    t = cst(r[5]) / T(TrackPad.C_LIGHT)
+    t = -cst(r[5]) / T(TrackPad.C_LIGHT)
     delta_new = r[6] - elem.scale * TrackPad.wakefieldfunc(elem, t)
     return SVector{6,CTPS{T}}(r[1], r[2], r[3], r[4], r[5], delta_new)
 end

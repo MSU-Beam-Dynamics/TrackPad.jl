@@ -2,6 +2,7 @@ using Test
 using TrackPad
 using LinearAlgebra
 import JuTrack
+Base.include(@__MODULE__, joinpath(@__DIR__, "convention_helpers.jl"))
 
 # Deterministic initial coordinates shared across all regression tests.
 particles_initial = [
@@ -16,7 +17,9 @@ particles_initial = [
     9.1e-4  -6.7e-4 -4.6e-4   5.1e-4   4.4e-4  -6.3e-4
    -9.8e-4  7.3e-4   5.3e-4  -5.9e-4  -4.9e-4   7.1e-4
 ]
-energy_val = 3.5e9
+# JuTrack's bend kick mixes delta_P and delta_E at finite beta. Compare the
+# shared ultrarelativistic limit here; finite-beta behavior is tested directly.
+energy_val = 1.0e15
 old_exact_beti = JuTrack.use_exact_beti
 JuTrack.use_exact_beti = 1
 
@@ -58,9 +61,9 @@ line_dba_jt = [
     JuTrack.DRIFT(len=2.0),
 ]
 try
-    beam_jt = JuTrack.Beam(copy(particles_initial), energy=energy_val, mass=JuTrack.m_e)
+    beam_jt = JuTrack.Beam(flip_longitudinal_coordinate(particles_initial), energy=energy_val, mass=JuTrack.m_e)
     JuTrack.linepass!(line_dba_jt, beam_jt)
-    particles_final_jutrack = beam_jt.r
+    particles_final_jutrack = flip_longitudinal_coordinate(beam_jt.r)
 
     # Prepare coordinates
     coords = deepcopy(particles_initial)
@@ -81,4 +84,3 @@ try
 finally
     JuTrack.use_exact_beti = old_exact_beti
 end
-

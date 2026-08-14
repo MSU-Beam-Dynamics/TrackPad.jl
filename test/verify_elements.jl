@@ -1,10 +1,15 @@
 using Test
 using TrackPad
 using LinearAlgebra
+using StaticArrays
 import JuTrack
+Base.include(@__MODULE__, joinpath(@__DIR__, "convention_helpers.jl"))
 
 const PARITY_ATOL = 1e-15
-const ENERGY_VAL = 3.5e9
+# JuTrack uses mutually inconsistent finite-beta longitudinal normalizations
+# across element families. Exact parity is meaningful only in the common
+# ultrarelativistic limit; canonical finite-beta behavior is tested below.
+const ENERGY_VAL = 1.0e15
 
 # Deterministic initial coordinates shared across element parity checks.
 particles_initial = [
@@ -28,9 +33,9 @@ function _track_tp(elem; energy::Float64 = ENERGY_VAL, particles = particles_ini
 end
 
 function _track_jt(elem; energy::Float64 = ENERGY_VAL, particles = particles_initial, current::Float64 = 0.0)
-    beam = JuTrack.Beam(copy(particles), energy = energy, mass = JuTrack.m_e, current = current)
+    beam = JuTrack.Beam(flip_longitudinal_coordinate(particles), energy = energy, mass = JuTrack.m_e, current = current)
     JuTrack.linepass!([elem], beam)
-    return beam.r
+    return flip_longitudinal_coordinate(beam.r)
 end
 
 function _assert_parity(name::AbstractString, tp_elem, jt_elem; energy::Float64 = ENERGY_VAL, particles = particles_initial, current::Float64 = 0.0)
@@ -81,22 +86,13 @@ end
             AccelCavity(0.0; volt = 2.5e6, freq = 500.0e6, h = 1200.0, phis = 0.2, energy = ENERGY_VAL),
             JuTrack.AccelCavity(len = 0.0, volt = 2.5e6, freq = 500.0e6, h = 1200.0, phis = 0.2),
         )
-        _assert_parity(
-            "LongitudinalRFMap",
-            LongitudinalRFMap(2.0e-4, AccelCavity(0.0; volt = 2.5e6, freq = 500.0e6, h = 1200.0, phis = 0.2, energy = ENERGY_VAL)),
-            JuTrack.LongitudinalRFMap(2.0e-4, JuTrack.AccelCavity(len = 0.0, volt = 2.5e6, freq = 500.0e6, h = 1200.0, phis = 0.2)),
-        )
-
         # Auxiliary helpers.
         _assert_parity("Solenoid", Solenoid(0.5, 0.8), JuTrack.SOLENOID(len = 0.5, ks = 0.8))
         _assert_parity("Corrector", Corrector(0.4, 1.5e-4, -2.2e-4), JuTrack.CORRECTOR(len = 0.4, xkick = 1.5e-4, ykick = -2.2e-4))
         _assert_parity("HKicker", HKicker(L = 0.0, xkick = 2.5e-4), JuTrack.HKICKER(len = 0.0, xkick = 2.5e-4))
         _assert_parity("VKicker", VKicker(L = 0.0, ykick = -1.5e-4), JuTrack.VKICKER(len = 0.0, ykick = -1.5e-4))
-        _assert_parity("Translation", Translation(0.0; dx = 1e-3, dy = -2e-3, ds = 3e-3), JuTrack.TRANSLATION(len = 0.0, dx = 1e-3, dy = -2e-3, ds = 3e-3))
         _assert_parity("YRotation", YRotation(0.0; angle = 0.02), JuTrack.YROTATION(len = 0.0, angle = 0.02))
         _assert_parity("Wiggler", Wiggler(1.2; lw = 0.2, Bmax = 0.8, Nsteps = 8), JuTrack.WIGGLER(len = 1.2, lw = 0.2, Bmax = 0.8, Nsteps = 8))
-        _assert_parity("LorentzBoost", LorentzBoost(0.03), JuTrack.LorentzBoost(0.03))
-        _assert_parity("InvLorentzBoost", InvLorentzBoost(0.03), JuTrack.InvLorentzBoost(0.03))
 
         # Space-charge canonical family.
         _assert_parity("DriftSC", DriftSC(0.5; a = 0.01, b = 0.02, Nl = 12, Nm = 14, Nsteps = 2), JuTrack.DRIFT_SC(len = 0.5, a = 0.01, b = 0.02, Nl = 12, Nm = 14, Nsteps = 2))
@@ -117,6 +113,76 @@ end
     finally
         JuTrack.use_exact_beti = old_exact_beti
     end
+end
+
+@testset "Canonical longitudinal slip map" begin
+    rf = AccelCavity(0.0; freq=500.0e6, h=1200.0, energy=ENERGY_VAL)
+    elem = LongitudinalRFMap(2.0e-4, rf)
+    beam = Beam(ENERGY_VAL)
+    delta_e = 2.0e-3
+    input = SVector(0.0, 0.0, 0.0, 0.0, 1.0e-3, delta_e)
+    output = pass!(elem, input, inv(beam.beta))
+    eta = elem.alphac - (1 - beam.beta^2)
+    expected_z = input[5] - (2π * rf.h * eta / (rf.k * beam.beta)) * delta_e
+    @test output[5] ≈ expected_z atol=1.0e-15
+    @test output[5] < input[5]
+end
+
+@testset "Finite-beta canonical maps" begin
+    beam = Beam(50.0e6; mass=M_PROTON, charge=1.0)
+    beti = inv(beam.beta)
+    reference = SVector(1.0e-3, 2.0e-3, -7.0e-4, 8.0e-4, 3.0e-3, 2.0e-2)
+    symplectic_form = zeros(6, 6)
+    for i in (1, 3, 5)
+        symplectic_form[i, i + 1] = 1
+        symplectic_form[i + 1, i] = -1
+    end
+
+    function numerical_map(elem; h=1.0e-5)
+        map = zeros(6, 6)
+        for j in 1:6
+            offset = zeros(6)
+            offset[j] = h
+            plus = pass!(elem, reference + SVector{6}(offset), beti)
+            minus = pass!(elem, reference - SVector{6}(offset), beti)
+            map[:, j] = (plus - minus) / (2h)
+        end
+        return map
+    end
+
+    elements = AbstractElement[
+        Drift(0.7),
+        SBend(0.9, 0.15; num_int_steps=10),
+        ExactSBend(0.9, 0.15; num_int_steps=10),
+        Solenoid(0.5, 0.8),
+        Corrector(0.4, 1.5e-4, -2.2e-4),
+        RFCavity(0.0, 2.0e5, 80.0e6, 0.01;
+                  energy=beam.energy, charge=beam.charge),
+        CrabCavity(0.0; volt=2.0e5, freq=80.0e6,
+                   energy=beam.energy, charge=beam.charge),
+        AccelCavity(0.0; volt=2.0e5, freq=80.0e6,
+                    energy=beam.energy, charge=beam.charge),
+        Translation(0.0; dx=1.0e-3, dy=-2.0e-3, ds=3.0e-3),
+        Patch(z_offset=3.0e-3, t_offset=2.0e-12),
+        YRotation(0.0; angle=0.03),
+        LorentzBoost(0.03),
+        InvLorentzBoost(0.03),
+    ]
+    for elem in elements
+        map = numerical_map(elem)
+        @test norm(map' * symplectic_form * map - symplectic_form, Inf) < 1.0e-7
+    end
+
+    p0c = beam.beta * (beam.energy + beam.mass)
+    lag = TrackPad.C_LIGHT / (4 * 80.0e6)
+    cavity = RFCavity(0.0, 2.0e5, 80.0e6, lag;
+                      energy=beam.energy, charge=beam.charge)
+    output = pass!(cavity, zero(reference), beti)
+    @test output[6] ≈ cavity.charge * cavity.volt / p0c rtol=1.0e-14
+
+    boosted = pass!(LorentzBoost(0.03), reference, beti)
+    restored = pass!(InvLorentzBoost(0.03), boosted, beti)
+    @test restored ≈ reference atol=1.0e-15
 end
 
 @testset "Element Gaps" begin

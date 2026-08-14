@@ -25,6 +25,8 @@ generated code:
 | Sector bend | `SBend(L, angle, e1=0, e2=0; name=:SBEND, ...)` |
 | Rectangular bend | `RBend(L, angle; name=:SBEND, ...)` |
 | RF cavity | `RFCavity(L, volt, freq, lag=0; energy, charge, name=:RFCA)` |
+| Crab cavity | `CrabCavity(L; volt, freq, phi, energy, charge, name=:CRABCAVITY)` |
+| Accelerating cavity | `AccelCavity(L; volt, freq, phis, energy, charge, name=:ACCELCAVITY)` |
 | Corrector | `Corrector(L, hkick, vkick; name=:CORRECTOR)` |
 | Solenoid | `Solenoid(L, ks; name=:SOLENOID)` |
 
@@ -110,6 +112,7 @@ RFCavity
 | `freq` | RF frequency [Hz] |
 | `lag` | RF phase lag represented as a longitudinal offset [m] |
 | `h` | harmonic number |
+| `energy` | reference kinetic energy [eV] |
 | `charge` | reference-particle charge in units of elementary charge |
 
 ## Corrector

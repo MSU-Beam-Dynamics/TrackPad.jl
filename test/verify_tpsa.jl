@@ -73,6 +73,14 @@ function jt_to_matrix(rin)
     return M
 end
 
+function canonical_jutrack_tpsa(order::Int)
+    rin = [JuTrack.CTPS(0.0, i, 6, order) for i in 1:6]
+    rin[5] = -rin[5]
+    JuTrack.linepass_TPSA!(line_jt, rin; E0=3.0e9, m0=JuTrack.m_e)
+    rin[5] = -rin[5]
+    return rin
+end
+
 @testset "TPSA linear map matches finite-difference one_turn_map" begin
     # First-order TPSA map about closed orbit (zero for this cell)
     r_tpsa = tpsa_map(ring, beam; order=1)
@@ -138,8 +146,7 @@ end
 @testset "JuTrack CTPS: first-order map matches TrackPad PolySeries" begin
     with_matched_jutrack_hamiltonian() do
         # JuTrack setup: 6 identity CTPS variables, order 1
-        rin_jt = [JuTrack.CTPS(0.0, i, 6, 1) for i in 1:6]
-        JuTrack.linepass_TPSA!(line_jt, rin_jt; E0=3.0e9, m0=JuTrack.m_e)
+        rin_jt = canonical_jutrack_tpsa(1)
 
         r_tp = tpsa_map(ring, beam; order=1)
 
@@ -155,8 +162,7 @@ end
 
 @testset "JuTrack CTPS: constant term (closed-orbit value) matches" begin
     with_matched_jutrack_hamiltonian() do
-        rin_jt = [JuTrack.CTPS(0.0, i, 6, 1) for i in 1:6]
-        JuTrack.linepass_TPSA!(line_jt, rin_jt; E0=3.0e9, m0=JuTrack.m_e)
+        rin_jt = canonical_jutrack_tpsa(1)
 
         r_tp = tpsa_map(ring, beam; order=1)
 
@@ -169,8 +175,7 @@ end
 @testset "JuTrack CTPS: second-order coefficients match TrackPad PolySeries" begin
     with_matched_jutrack_hamiltonian() do
         # order-2: 28 terms for 6 variables  (1 + 6 + 21)
-        rin_jt2 = [JuTrack.CTPS(0.0, i, 6, 2) for i in 1:6]
-        JuTrack.linepass_TPSA!(line_jt, rin_jt2; E0=3.0e9, m0=JuTrack.m_e)
+        rin_jt2 = canonical_jutrack_tpsa(2)
 
         r2_tp = tpsa_map(ring, beam; order=2)
 

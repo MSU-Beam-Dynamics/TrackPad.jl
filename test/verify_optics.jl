@@ -3,6 +3,7 @@ using TrackPad
 import JuTrack
 using LinearAlgebra
 using StaticArrays
+Base.include(@__MODULE__, joinpath(@__DIR__, "convention_helpers.jl"))
 
 function with_jutrack_exact_beti(f::Function)
     old_exact_beti = JuTrack.use_exact_beti
@@ -46,6 +47,43 @@ beam = Beam(3.0e9)
         line, zero(SVector{6,Float64}), beam, 1,
     )
     @test isperiodic(materialize_lattice(ring))
+end
+
+@testset "Longitudinal coordinate convention" begin
+    low_energy_beam = Beam(50.0e6; mass=M_PROTON, charge=1.0)
+    beta0 = low_energy_beam.beta
+    delta_e = 0.02
+    delta_p = sqrt(1 + 2delta_e / beta0 + delta_e^2) - 1
+
+    # The sixth coordinate is ΔE/(P0*c), which differs visibly from ΔP/P0
+    # away from the ultrarelativistic limit.
+    @test delta_p != delta_e
+    @test 1 + delta_p == sqrt(1 + 2delta_e / beta0 + delta_e^2)
+
+    L = 1.7
+    r_energy = SVector(0.0, 0.0, 0.0, 0.0, 0.0, delta_e)
+    tracked_energy = drift6(r_energy, L, inv(beta0))
+    pi_s = 1 + delta_p
+    expected_z = -L * ((inv(beta0) + delta_e) / pi_s - inv(beta0))
+    @test tracked_energy[5] ≈ expected_z rtol=1.0e-14
+
+    # A longer geometric path arrives late and decreases z=s/β0-c*t.
+    r_angle = SVector(0.0, 0.1, 0.0, 0.0, 0.0, 0.0)
+    @test drift6(r_angle, L, inv(beta0))[5] < 0
+
+    canonical_line = Lattice(AbstractElement[
+        Drift(0.7),
+        RFCavity(0.0, 2.0e5, 80.0e6, 0.01;
+                  energy=low_energy_beam.energy, charge=low_energy_beam.charge),
+        Drift(0.4),
+    ])
+    map6 = transfer_map(canonical_line, low_energy_beam; h=1.0e-7)
+    symplectic_form = zeros(6, 6)
+    for i in (1, 3, 5)
+        symplectic_form[i, i + 1] = 1
+        symplectic_form[i + 1, i] = -1
+    end
+    @test norm(map6' * symplectic_form * map6 - symplectic_form, Inf) < 1.0e-8
 end
 
 ring_jt = [
@@ -98,7 +136,9 @@ end
     m66_ord0 = findm66(ring, 0.0, 0; E0=3.0e9, m0=M_ELECTRON)
     @test m66_ord0 == m66
 
-    m66_jt = JuTrack.fastfindm66(ring_jt, 0.0; E0=3.0e9, m0=JuTrack.m_e)
+    m66_jt = canonicalize_jutrack_map(
+        JuTrack.fastfindm66(ring_jt, 0.0; E0=3.0e9, m0=JuTrack.m_e),
+    )
     @test m66 == m66_jt
 
     refpts = [2, 4]

@@ -288,13 +288,15 @@ end
         cavity, SVector(0.0, 0.0, 0.0, 0.0, -dz, 0.0), inv(beam.beta),
     )
     rf_slope = (plus[6] - minus[6]) / (2dz)
-    expected = cavity.charge * cavity.volt / cavity.energy *
-               (2π * cavity.freq / 2.99792458e8) / beam.beta^2
-    @test rf_slope < 0
+    p0c = beam.beta * (beam.energy + beam.mass)
+    expected = -cavity.charge * cavity.volt / p0c *
+               (2π * cavity.freq / 2.99792458e8)
+    @test rf_slope > 0
     @test rf_slope ≈ expected rtol=1.0e-6
 
-    # A positive-slip ring is stable only when this slope is negative.
-    r56 = 2.5
+    # For z=-c*Δt, a positive-slip ring has negative R56 and requires a
+    # positive RF slope for stability.
+    r56 = -2.5
     @test abs(2 + r56 * rf_slope) < 2
 
     rm(path; force=true)

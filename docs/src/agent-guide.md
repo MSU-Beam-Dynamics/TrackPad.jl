@@ -64,6 +64,10 @@ When producing analysis code or numerical comparisons, state:
 If one is unknown, ask or expose it as a parameter instead of silently choosing
 a convention from another accelerator code.
 
+In particular, never describe `delta` as ``(P-P_0)/P_0``. TrackPad stores the
+canonical pair ``(z,\delta_E)`` with
+``z=s/\beta_0-ct=-c(t-t_0)`` and ``\delta_E=(E-E_0)/(P_0c)``.
+
 ## Array Shapes
 
 | Quantity | Shape | Index order |

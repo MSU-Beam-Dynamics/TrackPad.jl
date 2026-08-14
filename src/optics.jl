@@ -355,8 +355,9 @@ end
     getchrom(lat, beam; dp=0, reference=zeros, h=3e-8, dpp=1e-8,
              centered=false, closed_orbit=false)
 
-Finite-difference chromaticity `(ξx, ξy)` from tune variation with momentum offset.
-Set `centered=true` for a centered momentum derivative and
+Finite-difference chromaticity `(ξx, ξy)` from tune variation with the stored
+energy coordinate `δE = (E-E0)/(P0*c)`. The legacy `dp` and `dpp` keyword names
+refer to `δE`, not `(P-P0)/P0`. Set `centered=true` for a centered derivative and
 `closed_orbit=true` to evaluate each map around its off-momentum closed orbit.
 The defaults preserve the JuTrack-compatible forward-difference convention.
 """
@@ -460,7 +461,8 @@ end
 """
     find_closed_orbit_4d(lat, beam; dp=0, x0=zeros, tol=1e-10, maxiter=20, h=1e-6, reg=1e-12)
 
-Find a 4-D closed orbit `(x, px, y, py)` at fixed momentum offset `dp`.
+Find a 4-D closed orbit `(x, px, y, py)` at fixed sixth-coordinate energy
+offset `dp = δE`. The keyword name is retained for compatibility.
 """
 function find_closed_orbit_4d(lat::Lattice, beam::Beam{T};
                               dp::T=zero(T),

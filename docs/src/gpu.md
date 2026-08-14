@@ -360,7 +360,8 @@ from CPU evaluation.
 
 ### Lost Particles
 
-A particle is considered lost when its longitudinal momentum `pz² ≤ 0`.
+A particle is considered lost when its normalized longitudinal momentum
+``\pi_s^2\le0``.
 On GPU, lost particles accumulate `Inf` or `NaN` coordinates that propagate
 naturally through subsequent elements.  Check for lost particles with:
 

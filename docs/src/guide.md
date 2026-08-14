@@ -18,16 +18,21 @@ TrackPad uses the standard 6D phase-space vector
 | Index | Symbol | Description |
 |-------|--------|-------------|
 | 1 | ``x`` | horizontal position [m] |
-| 2 | ``p_x`` | normalised horizontal momentum ``p_x / p_0`` |
+| 2 | ``p_x`` | normalized canonical horizontal momentum ``P_x/P_0`` |
 | 3 | ``y`` | vertical position [m] |
-| 4 | ``p_y`` | normalised vertical momentum ``p_y / p_0`` |
-| 5 | ``z`` | longitudinal position (``-c \Delta t``) [m] |
-| 6 | ``\delta`` | fractional momentum deviation ``(p - p_0)/p_0`` |
+| 4 | ``p_y`` | normalized canonical vertical momentum ``P_y/P_0`` |
+| 5 | ``z`` | canonical longitudinal coordinate ``s/\beta_0-ct`` [m] |
+| 6 | ``\delta_E`` | relative energy deviation ``(E-E_0)/(P_0c)`` |
 
 Coordinates are stored as `StaticArrays.SVector{6,T}`. The element type `T`
 may be `Float64` for normal tracking or a `PolySeries.CTPS` type for TPSA maps.
 The complete normative definition is in
 [Physics and Data Conventions](@ref conventions).
+
+The longitudinal canonical pair is
+``(z,\delta_E)=(-c(t-t_0),(E-E_0)/(P_0c))``. A particle arriving early has
+positive ``z``. TrackPad does not use ``\delta_P=(P-P_0)/P_0``; see the
+normative page for the exact conversion.
 
 ## Beam
 
@@ -161,7 +166,8 @@ one-turn map.
 ξx, ξy = getchrom(fodo, beam)
 ```
 
-Natural chromaticity via finite-difference tune variation with momentum.
+Natural chromaticity via finite-difference tune variation with TrackPad's
+sixth coordinate ``\delta_E``.
 
 ### Periodic Ring Twiss
 
@@ -184,7 +190,8 @@ println("max βx = ", maximum(tw.betax), " m")
 | `tunex`, `tuney` | total phase advance / 2π |
 
 The older `twissline(fodo, beam)` spelling remains compatible. The `twissring`
-overloads are JuTrack-style interfaces accepting momentum offset and order.
+overloads are JuTrack-style interfaces accepting a sixth-coordinate energy
+offset and map order.
 
 ### Open-Line Twiss
 
@@ -203,7 +210,7 @@ but no tune.
 
 ```julia
 co = find_closed_orbit_6d(fodo, beam)   # full 6D Newton search
-co = find_closed_orbit_4d(fodo, beam; dp = 1e-3)  # 4D at fixed δ
+co = find_closed_orbit_4d(fodo, beam; dp = 1e-3)  # 4D at fixed δ_E
 ```
 
 ### One-Turn Map

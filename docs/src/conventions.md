@@ -11,135 +11,323 @@ an integrator or finite-difference step.
 
 ## Phase-Space Coordinates
 
-TrackPad uses
+TrackPad stores the phase-space vector
 
 ```math
-\mathbf{r} = (x, p_x, y, p_y, z, \delta).
+\mathbf{r} = (x, p_x, y, p_y, z, \delta_E),
 ```
 
-| Index | Name | Unit | Definition |
-|-------|------|------|------------|
-| 1 | `x` | m | Horizontal displacement |
-| 2 | `px` | 1 | Canonical horizontal momentum normalized by reference momentum |
-| 3 | `y` | m | Vertical displacement |
-| 4 | `py` | 1 | Canonical vertical momentum normalized by reference momentum |
-| 5 | `z` | m | Longitudinal path/time coordinate, approximately ``-c\Delta t`` |
-| 6 | `delta` | 1 | Relative momentum deviation ``(p-p_0)/p_0`` |
+in the following order:
 
-Scalar coordinates are normally `SVector{6,T}`. Particle batches are `N x 6`
-matrices: one particle per row and the same six coordinates in columns.
+| Index | Julia name | Unit | Definition |
+|:-----:|------------|------|------------|
+| 1 | `x` | ``\mathrm{m}`` | Horizontal displacement ``x`` |
+| 2 | `px` | ``1`` | Canonical horizontal momentum ``p_x=P_x/P_0`` |
+| 3 | `y` | ``\mathrm{m}`` | Vertical displacement ``y`` |
+| 4 | `py` | ``1`` | Canonical vertical momentum ``p_y=P_y/P_0`` |
+| 5 | `z` | ``\mathrm{m}`` | Canonical coordinate ``z=s/\beta_0-ct=-c(t-t_0)`` |
+| 6 | `delta` | ``1`` | Relative energy variable ``\delta_E=(E-E_0)/(P_0c)`` |
 
-The exact drift Hamiltonian uses
+Here ``P_0``, ``E_0``, and ``t_0`` are the reference momentum, total energy,
+and arrival time at the same longitudinal reference position. The transverse
+momenta are canonical momenta; they equal mechanical momenta in a field-free
+region. Scalar coordinates are normally `SVector{6,T}`. Particle batches are
+``N\times6`` matrices with one particle per row.
+
+### Longitudinal canonical pair
+
+With ``\Delta t=t-t_0``, the energy-based canonical pair is
 
 ```math
-p_z^2 = 1 + 2\delta/\beta + \delta^2 - p_x^2 - p_y^2.
+(\sigma_E,\delta_E)
+=\left(-c\Delta t,\frac{\Delta E}{P_0c}\right).
 ```
 
-`USE_EXACT_HAMILTONIAN` is enabled by default. Changing it changes map and
-chromaticity comparisons.
+At a fixed reference position ``s``, the reference particle arrives at
+``ct_0=s/\beta_0``. TrackPad stores ``z=\sigma_E`` directly: a particle
+arriving early has ``z>0``, while a late particle has ``z<0``. The symplectic
+two-form in TrackPad's coordinate order is
+
+```math
+\omega
+=\mathrm{d}x\wedge\mathrm{d}p_x
++\mathrm{d}y\wedge\mathrm{d}p_y
++\mathrm{d}z\wedge\mathrm{d}\delta_E.
+```
+
+This sign is observable: a particle that takes longer than the reference
+particle to cross a drift acquires negative `z`. TrackPad's coordinate agrees
+directly with the MAD-X canonical coordinate:
+
+```math
+T_{\mathrm{MAD\text{-}X}}=z_{\mathrm{TrackPad}}=-c\Delta t.
+```
+
+An equally valid momentum-based canonical pair is
+
+```math
+(\sigma_P,\delta_P)
+=\left(-\beta_0c\Delta t,\frac{P-P_0}{P_0}\right).
+```
+
+TrackPad does **not** store ``\delta_P``. The exact conversion between its
+sixth coordinate and relative momentum is
+
+```math
+1+\delta_P
+=\sqrt{1+\frac{2\delta_E}{\beta_0}+\delta_E^2},
+```
+
+and only to first order is ``\delta_E=\beta_0\delta_P+O(\delta_P^2)``.
+Accordingly, ``\sigma_P=\beta_0\sigma_E`` at linear order. The common
+replacement ``\delta_E\simeq\delta_P`` is an ultrarelativistic approximation,
+not TrackPad's definition.
+
+### Exact drift
+
+For a straight element, define the normalized longitudinal mechanical momentum
+
+```math
+\pi_s=\frac{P_s}{P_0}
+=\sqrt{1+\frac{2\delta_E}{\beta_0}+\delta_E^2-p_x^2-p_y^2}.
+```
+
+The exact drift of length ``L`` is
+
+```math
+\begin{aligned}
+x_f &= x_i + L\frac{p_x}{\pi_s},\\
+y_f &= y_i + L\frac{p_y}{\pi_s},\\
+z_f &= z_i - L\left[
+\frac{\beta_0^{-1}+\delta_E}{\pi_s}-\beta_0^{-1}
+\right],\\
+\delta_{E,f} &= \delta_{E,i}.
+\end{aligned}
+```
+
+This equation fixes both the meaning of `delta` and the sign of `z`.
+`USE_EXACT_HAMILTONIAN` is enabled by default. Disabling it selects the
+JuTrack-compatible ultrarelativistic approximation and changes nonlinear maps
+and chromaticity.
+
+### Finite-``\beta_0`` coverage
+
+Maps originally expressed in the momentum variable use the exact conversion
+
+```math
+p=\frac{P}{P_0}
+=\sqrt{1+\frac{2\delta_E}{\beta_0}+\delta_E^2},
+\qquad
+\frac{\mathrm d\delta_P}{\mathrm d\delta_E}
+=\frac{\beta_0^{-1}+\delta_E}{p}.
+```
+
+The second factor is required in the longitudinal update. TrackPad applies
+this conversion in the standard and exact bend bodies, `Solenoid`,
+`Corrector`, `LBend`, the non-radiating `Wiggler`, and the RF-family maps.
+The scalar CPU, packed GPU, and PolySeries implementations use the same
+conversion where each element is supported.
+
+The following specialized paths remain approximations or require a separate
+model-specific normalization audit:
+
+- the drift selected by `USE_EXACT_HAMILTONIAN=false`, which deliberately uses
+  the ultrarelativistic ``p\simeq1+\delta_E`` Hamiltonian;
+- the Brown/SOLEIL/THOMX bend fringe-field models; and
+- synchrotron-radiation, wake, and collective kicks.
+
+Do not infer finite-energy validity solely from historical JuTrack parity.
+JuTrack comparisons are exact only in the shared ultrarelativistic limit when
+the reference implementation mixes ``\delta_P`` and ``\delta_E`` conventions.
+
+### Compatibility with earlier TrackPad versions
+
+Earlier TrackPad versions inherited JuTrack's noncanonical positive-delay
+coordinate ``z_{\mathrm{old}}=c(t-t_0)``. Existing particle arrays and stored
+maps must be converted with
+
+```math
+\mathbf r_{\mathrm{new}}=C\mathbf r_{\mathrm{old}},
+\qquad
+C=\operatorname{diag}(1,1,1,1,-1,1),
+```
+
+and a first-order map must be converted as
+``M_{\mathrm{new}}=CM_{\mathrm{old}}C``. This is an intentional breaking
+correction. JuTrack comparisons in TrackPad's tests apply this transformation
+explicitly.
+
+At finite ``\beta_0``, this coordinate sign conversion does not reproduce old
+tracking results from bends, RF cavities, solenoids, correctors, linear bends,
+or wigglers. Those maps now use the exact ``\delta_E``-to-momentum conversion
+described above, so there is no coordinate-only conversion for an already
+tracked trajectory.
 
 ## Reference Beam
 
-`Beam(energy; mass, charge)` uses:
+`Beam(energy; mass, charge)` uses the following quantities:
 
 | Field | Unit | Meaning |
 |-------|------|---------|
-| `energy` | eV | Reference kinetic energy |
-| `mass` | eV | Rest-mass energy ``mc^2`` |
-| `charge` | elementary charge | Signed reference-particle charge |
-| `gamma` | 1 | ``(energy + mass)/mass`` |
-| `beta` | 1 | Reference speed divided by ``c`` |
+| `energy` | ``\mathrm{eV}`` | Reference kinetic energy ``K_0`` |
+| `mass` | ``\mathrm{eV}`` | Rest-mass energy ``m_0c^2`` |
+| `charge` | ``e`` | Signed reference-particle charge ``q/e`` |
+| `gamma` | ``1`` | ``\gamma_0=E_0/(m_0c^2)=1+K_0/(m_0c^2)`` |
+| `beta` | ``1`` | ``\beta_0=P_0c/E_0=v_0/c`` |
 
-`Beam(3e9)` is therefore a 3 GeV kinetic-energy electron beam, not a 3 GeV
-total-energy beam. PALS `pc_ref` and `E_tot_ref`, and MAD-X `PC` and `ENERGY`,
-are converted to kinetic energy by the readers.
+The total energy and reference momentum satisfy
+
+```math
+E_0=K_0+m_0c^2,
+\qquad
+P_0c=\sqrt{E_0^2-m_0^2c^4}.
+```
+
+`Beam(3e9)` is therefore a ``3\,\mathrm{GeV}`` kinetic-energy electron beam,
+not a ``3\,\mathrm{GeV}`` total-energy beam. PALS `pc_ref` and `E_tot_ref`,
+and MAD-X `PC` and `ENERGY`, are converted to kinetic energy by the readers.
 
 ## Magnet Strengths
 
-Named multipole constructors take standard normalized strengths:
+Named multipole constructors take normalized strengths:
 
 | Constructor field | Unit |
 |-------------------|------|
-| `Quadrupole.k1` | m^-2 |
-| `Sextupole.k2` | m^-3 |
-| `Octupole.k3` | m^-4 |
+| `Quadrupole.k1` | ``\mathrm{m}^{-2}`` |
+| `Sextupole.k2` | ``\mathrm{m}^{-3}`` |
+| `Octupole.k3` | ``\mathrm{m}^{-4}`` |
 
-Pass `k2` and `k3` without factorial scaling. Tracking inserts `k2/2!` and
-`k3/3!` into the polynomial kick internally. PALS `Kn1`, `Kn2`, and `Kn3` map
-directly to these named strengths. Integrated PALS values `Kn1L`, `Kn2L`, and
-`Kn3L` are divided by element length during compilation.
+Pass ``K_2`` and ``K_3`` without factorial scaling. Tracking inserts
+``K_2/2!`` and ``K_3/3!`` into the polynomial kick. PALS `Kn1`, `Kn2`, and
+`Kn3` map directly to these named strengths. Integrated PALS values `Kn1L`,
+`Kn2L`, and `Kn3L` are divided by element length during compilation.
 
-The raw `polynom_a` and `polynom_b` arrays are the skew and normal polynomial
-coefficients consumed by Horner evaluation, ordered from dipole through
-octupole. They are lower-level fields and are not interchangeable with named
-`k2`/`k3` unless the appropriate factorial normalization is applied.
+The raw `polynom_a` and `polynom_b` arrays contain skew and normal coefficients
+``A_n`` and ``B_n``, ordered from dipole (``n=0``) through octupole
+(``n=3``). The thin kick evaluates
+
+```math
+\mathcal{B}(x,y)=\sum_{n=0}^{N}(B_n+\mathrm{i}A_n)(x+\mathrm{i}y)^n,
+```
+
+and applies
+
+```math
+\Delta p_x=-L\,\Re\mathcal{B},
+\qquad
+\Delta p_y=+L\,\Im\mathcal{B}.
+```
+
+These lower-level coefficients are not interchangeable with named ``K_2`` or
+``K_3`` unless the factorial normalization is applied.
 
 ## Bend Geometry
 
 For `SBend(L, angle, e1, e2)`:
 
-- `L` is the reference arc length in metres.
-- `angle` is the signed total bend angle in radians.
-- Body curvature is `irho = angle/L` when `L != 0`.
-- `e1` and `e2` are entrance and exit pole-face angles in radians.
+- ``L`` is the reference arc length in metres.
+- ``\theta=\mathtt{angle}`` is the signed total bend angle in radians.
+- The body curvature is ``h=1/\rho=\theta/L`` when ``L\ne0``.
+- ``e_1`` and ``e_2`` are entrance and exit pole-face angles in radians.
 - `gap` is the full magnet gap in metres.
 
-`RBend(L, angle)` is a convenience constructor using the same body map with
-`e1 = e2 = angle/2`. Importers convert chord/rectangular geometry to TrackPad's
-arc-length representation before construction.
+`RBend(L, angle)` uses the same body map with
+``e_1=e_2=\theta/2``. Importers convert chord/rectangular geometry to
+TrackPad's arc-length representation before construction.
 
 ## RF Phase and Charge
 
-For `RFCavity`, the tracking phase is
+For `RFCavity`, the implemented phase is
 
 ```math
-\phi = 2\pi f (z - lag)/c - philag.
+\phi=-2\pi f\frac{z+\ell_{\mathrm{lag}}}{c}-\phi_{\mathrm{lag}},
 ```
+
+where `lag` stores ``\ell_{\mathrm{lag}}`` and `philag` stores
+``\phi_{\mathrm{lag}}``.
 
 | Field | Unit | Meaning |
 |-------|------|---------|
-| `volt` | V | Peak cavity voltage; numerically eV per unit elementary charge |
-| `freq` | Hz | RF frequency |
-| `lag` | m | Longitudinal phase offset |
-| `philag` | rad | Additional phase subtracted from the RF phase |
-| `energy` | eV | Reference kinetic energy used to normalize the kick |
-| `charge` | elementary charge | Signed reference-particle charge |
+| `volt` | ``\mathrm{V}`` | Peak cavity voltage ``V`` |
+| `freq` | ``\mathrm{Hz}`` | RF frequency ``f`` |
+| `lag` | ``\mathrm{m}`` | Longitudinal phase offset ``\ell_{\mathrm{lag}}`` |
+| `philag` | ``\mathrm{rad}`` | Additional phase ``\phi_{\mathrm{lag}}`` subtracted from ``\phi`` |
+| `energy` | ``\mathrm{eV}`` | Reference kinetic energy ``K_0`` used by the kick normalization |
+| `charge` | ``e`` | Signed reference-particle charge ``q/e`` |
+
+Let ``\widehat q=q/e`` be the signed charge value stored in `charge`. TrackPad
+computes ``P_0c`` from the reference kinetic energy and ``\beta_0`` and applies
+the canonical kick
+
+```math
+\delta_E^+
+=\delta_E^-
+-\frac{\widehat q V}{P_0c}\sin\phi.
+```
+
+`CrabCavity` and `AccelCavity` use the same ``\widehat qV/(P_0c)``
+normalization and expose `charge` for the signed reference charge. Their phase
+depends on ``-kz`` because ``z=-c\Delta t``.
+
+`LorentzBoost` and `InvLorentzBoost` form a canonical inverse pair. TrackPad
+keeps JuTrack's crossing-angle coordinate transformation but derives the
+momentum transformation from symplecticity; consequently these maps no longer
+have raw numerical parity with JuTrack's non-symplectic momentum scaling.
 
 A directly constructed `RFCavity` defaults to `energy=0`, which intentionally
-disables its kick. Set both `energy=beam.energy` and `charge=beam.charge` for a
-physical direct-construction model. PALS and MAD-X readers set them from the
-reference beam.
+disables its kick. Set `energy=beam.energy` and `charge=beam.charge` for direct
+construction. PALS and MAD-X readers set both fields from the reference beam.
 
-PALS/MAD-X phase values expressed in cycles are converted with
-`lag = phase * c/freq`. For an electron ring above transition, the stable
-no-acceleration MAD-X setting remains `LAG=0.5` because the signed charge is
-included in the kick.
+PALS/MAD-X phase values expressed in cycles are converted as
+``\ell_{\mathrm{lag}}=\mathrm{phase}\,c/f``. For an electron ring above
+transition, the stable no-acceleration MAD-X setting remains `LAG=0.5` because
+the signed reference charge is included in the kick.
+
+For `LongitudinalRFMap`, with ``k=2\pi f/c`` and
+``\eta=\alpha_c-1/\gamma_0^2``, the first-order energy-coordinate slip is
+
+```math
+z^+=z^--\frac{2\pi h\eta}{\beta_0 k}\,\delta_E.
+```
+
+The additional ``1/\beta_0`` relative to a momentum-coordinate formula follows
+from ``\delta_E=\beta_0\delta_P`` at the reference particle.
 
 ## Loss Convention
 
-For real-valued scalar tracking, `check_lost(r)` returns true when:
+For real-valued scalar tracking, `check_lost(r)` returns `true` when:
 
-- `x` or `y` is NaN;
-- `abs(x)` or `abs(y)` exceeds 1 m; or
-- `abs(px)` or `abs(py)` exceeds 1.
+- ``x`` or ``y`` is `NaN`;
+- ``\lvert x\rvert`` or ``\lvert y\rvert`` exceeds ``1\,\mathrm{m}``; or
+- ``\lvert p_x\rvert`` or ``\lvert p_y\rvert`` exceeds ``1``.
 
-Some maps also produce NaN coordinates when longitudinal momentum becomes
-nonphysical. Matrix tracking uses integer flags (`0` alive, `1` lost). Packed
-GPU tracking writes nonfinite coordinates for lost particles. These are current
-global safety limits, not element apertures.
+Some maps also produce `NaN` coordinates when ``\pi_s^2\le0``. Matrix tracking
+uses integer flags (`0` alive, `1` lost). Packed GPU tracking writes nonfinite
+coordinates for lost particles. These are current global safety limits, not
+element apertures.
 
 ## Optics and Finite Differences
 
-- `one_turn_map`/`findm66` compute numerical Jacobians.
-- `gettune` extracts uncoupled tunes from transverse 2 x 2 blocks.
-- `twissline` computes uncoupled periodic Twiss functions at element boundaries.
-- `getchrom` defaults to the JuTrack-compatible forward momentum difference;
-  use `centered=true` for a centered derivative.
+- `one_turn_map` and `findm66` compute numerical Jacobians.
+- `gettune` extracts uncoupled tunes from transverse ``2\times2`` blocks.
+- `twissline` and `periodic_twiss` compute uncoupled periodic Twiss functions
+  at element boundaries; `transport_twiss` propagates supplied line optics.
+- `getchrom` defaults to the JuTrack-compatible forward difference; use
+  `centered=true` for a centered derivative.
 - Coupled optics are not yet represented by `TwissLineResult`.
 
-Finite-difference defaults are part of compatibility behavior. Specify `h`,
-`dpp`, reference orbit, and centered/closed-orbit choices when reporting a
-cross-code comparison.
+The legacy keywords `dp` and `dpp` denote offsets and steps in TrackPad's sixth
+coordinate ``\delta_E``, despite their names. Thus `getchrom` returns
+``\mathrm{d}Q/\mathrm{d}\delta_E``. At the reference energy,
+
+```math
+\frac{\mathrm{d}Q}{\mathrm{d}\delta_P}
+=\beta_0\frac{\mathrm{d}Q}{\mathrm{d}\delta_E}.
+```
+
+Finite-difference defaults are part of compatibility behavior. Specify ``h``,
+``\Delta\delta_E``, the reference orbit, and centered/closed-orbit choices when
+reporting a cross-code comparison.
 
 ## Time Dependence
 

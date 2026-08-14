@@ -518,6 +518,7 @@ function _pals_build_element(name::String, d::Dict;
         return CrabCavity(
             len; name=Symbol(name), volt=volt, freq=freq,
             phi=phase*2π, energy=Float64(beam_energy),
+            charge=Float64(beam_charge),
         )
     elseif k == "SOLENOID"
         ks = Float64(get(solp, "Ksol", 0.0))
@@ -1193,6 +1194,7 @@ function _madx_build_element(name::String, d::Dict, type_defs::Dict;
         return CrabCavity(
             L; name=sname, volt=volt, freq=freq,
             phi=phi, energy=Float64(beam_energy),
+            charge=Float64(beam_charge),
         )
     elseif mtype == "SOLENOID"
         return Solenoid(L, ks; name=sname)

@@ -3,6 +3,7 @@ using TrackPad
 import JuTrack
 using StaticArrays
 using LinearAlgebra
+Base.include(@__MODULE__, joinpath(@__DIR__, "convention_helpers.jl"))
 
 function jutrack_linepass(r::SVector{6,Float64}, k1::Float64; num_steps::Int)
     line = [
@@ -10,9 +11,10 @@ function jutrack_linepass(r::SVector{6,Float64}, k1::Float64; num_steps::Int)
         JuTrack.SBEND(len=0.4, angle=0.0, PolynomB=[0.0, k1, 0.0, 0.0], NumIntSteps=num_steps),
         JuTrack.DRIFT(len=1.0),
     ]
-    beam = JuTrack.Beam(reshape(collect(r), 1, 6), energy=3.0e9, mass=JuTrack.m_e)
+    r_jt = flip_longitudinal_coordinate(r)
+    beam = JuTrack.Beam(reshape(collect(r_jt), 1, 6), energy=3.0e9, mass=JuTrack.m_e)
     JuTrack.linepass!(line, beam)
-    return SVector{6,Float64}(vec(beam.r[1, :])...)
+    return SVector{6,Float64}(flip_longitudinal_coordinate(vec(beam.r[1, :]))...)
 end
 
 old_exact_beti = JuTrack.use_exact_beti

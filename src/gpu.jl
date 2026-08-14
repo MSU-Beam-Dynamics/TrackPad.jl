@@ -194,7 +194,7 @@ end
 # All functions are @inline and use scalar arguments only.
 # Metal/CUDA compile these to native GPU code via KernelAbstractions.
 #
-# Convention: coordinates (x, px, y, py, z, d) with d = Δp/p₀
+# Convention: (x, px, y, py, z, d), z=s/β0-c*t and d=ΔE/(P0*c).
 # The exact Hamiltonian is always used: pz = sqrt(1+2δ/β+δ²−px²−py²)
 #
 # Lost-particle handling: if pz² ≤ 0 we clamp it to avoid sqrt(neg)
@@ -210,7 +210,7 @@ end
            px,
            y + NormL*py,
            py,
-           z + (NormL*(beti + d) - L*beti),
+           z - (NormL*(beti + d) - L*beti),
            d
 end
 
@@ -240,9 +240,9 @@ end
                                 pb0::T, pb1::T, pb2::T, pb3::T,
                                 L::T, irho::T, beti::T) where T
     RS, IS = _gpu_horner(x, y, pa0, pa1, pa2, pa3, pb0, pb1, pb2, pb3)
-    px_new = px - L*(RS - (d - x*irho)*irho)
+    px_new = px - L*(RS - (d*beti - x*irho)*irho)
     py_new = py + L*IS
-    z_new  = z  + L*irho*x*beti
+    z_new  = z  - L*irho*x*beti
     return px_new, py_new, z_new
 end
 
@@ -310,13 +310,15 @@ end
     return x, px, y, py, z, d
 end
 
-# Solenoid body map (linearised, exact matrix solution)
+# Solenoid body map (linearised transverse dynamics, exact energy conversion)
 @inline function _gpu_solenoid(x::T, px::T, y::T, py::T, z::T, d::T,
                                  L::T, ks::T, beti::T) where T
     if ks == zero(T)
         return _gpu_drift(x, px, y, py, z, d, L, beti)
     end
-    p_norm = one(T) / (one(T) + d)
+    momentum = sqrt(one(T) + T(2)*d*beti + d*d)
+    p_norm = one(T) / momentum
+    momentum_jacobian = (beti + d) * p_norm
     xpr = px * p_norm;  ypr = py * p_norm
     H   = ks * p_norm / T(2)
     Sn  = sin(L * H);  Cn = cos(L * H)
@@ -324,7 +326,8 @@ end
     px_n = (-x*H*Cn*Sn + xpr*Cn*Cn - y*H*Sn*Sn + ypr*Cn*Sn) / p_norm
     y_n  = -x*Cn*Sn - xpr*Sn*Sn/H + y*Cn*Cn + ypr*Cn*Sn/H
     py_n = ( x*H*Sn*Sn - xpr*Cn*Sn - y*Cn*Sn*H + ypr*Cn*Cn) / p_norm
-    z_n  = z + L*(H*H*(x*x + y*y) + T(2)*H*(xpr*y - ypr*x) + xpr*xpr + ypr*ypr) / T(2)
+    z_n  = z - momentum_jacobian * L *
+           (H*H*(x*x + y*y) + T(2)*H*(xpr*y - ypr*x) + xpr*xpr + ypr*ypr) / T(2)
     return x_n, px_n, y_n, py_n, z_n, d
 end
 
@@ -527,10 +530,12 @@ end
             x, px, y, py, z, d = _gpu_drift(x, px, y, py, z, d, L/T(2), beti)
         end
         if energy > zero(T)
-            nv    = charge * volt / energy
-            phase = T(2*pi) * freq * (z - lag) / T(2.99792458e8) - philag
             beta  = one(T) / beti
-            d     = d - nv * sin(phase) / (beta * beta)
+            invgamma = sqrt(max(zero(T), one(T) - beta*beta))
+            p0c   = energy * (one(T) + invgamma) / beta
+            kick  = charge * volt / p0c
+            phase = -T(2*pi) * freq * (z + lag) / T(2.99792458e8) - philag
+            d     = d - kick * sin(phase)
         end
         if L > zero(T)
             x, px, y, py, z, d = _gpu_drift(x, px, y, py, z, d, L/T(2), beti)
@@ -539,10 +544,13 @@ end
     elseif etype == GPU_CORR
         xkick  = @inbounds fparams[2, i]
         ykick  = @inbounds fparams[3, i]
-        p_norm = one(T) / (one(T) + d)
+        momentum = sqrt(one(T) + T(2)*d*beti + d*d)
+        p_norm = one(T) / momentum
+        momentum_jacobian = (beti + d) * p_norm
         NormL  = L * p_norm
-        z  = z + NormL * p_norm * (xkick*xkick/T(3) + ykick*ykick/T(3) +
-                                    px*px + py*py + px*xkick + py*ykick) / T(2)
+        z  = z - momentum_jacobian * NormL * p_norm *
+                 (xkick*xkick/T(3) + ykick*ykick/T(3) +
+                  px*px + py*py + px*xkick + py*ykick) / T(2)
         x  = x  + NormL * (px + xkick/T(2))
         y  = y  + NormL * (py + ykick/T(2))
         px = px + xkick

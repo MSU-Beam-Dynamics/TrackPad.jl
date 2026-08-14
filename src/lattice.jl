@@ -19,7 +19,7 @@ Lightweight beam structure for TrackPad.jl.
 Unlike JuTrack's heavy Beam struct, this focuses on essential tracking parameters.
 
 # Fields
-- `energy::T`: Reference energy in eV
+- `energy::T`: Reference kinetic energy in eV
 - `mass::T`: Particle mass in eV (default: electron mass)
 - `charge::T`: Particle charge (default: -1.0 for electrons)
 - `gamma::T`: Relativistic gamma factor

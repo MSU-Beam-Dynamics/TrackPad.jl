@@ -57,10 +57,12 @@
 
 ## Important semantics
 
-- delta = (p - p0) / p0.
-- z is path-length/time coordinate in metres, approximately -c*Delta_t.
+- delta is delta_E = (E - E0) / (P0*c), not (P - P0) / P0.
+- z = s/beta0 - c*t = -c*(t - t0) in metres and is positive for an early
+  particle. The longitudinal canonical pair is (z, delta_E).
 - Sextupole k2 and octupole k3 are not pre-divided by factorials.
-- RF phase = 2*pi*freq*(z-lag)/c - philag.
+- RF phase = -2*pi*freq*(z+lag)/c - philag.
+- RF kicks use signed charge*voltage/(P0*c), not voltage/(K0*beta0^2).
 - Direct RFCavity default energy is zero, which disables its kick.
 - `check_lost` also checks transverse coordinate/momentum limits, not only NaN.
 - `twissline` computes an uncoupled periodic solution using finite differences.

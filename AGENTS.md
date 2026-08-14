@@ -36,15 +36,23 @@ Optional integrations live in `ext/` and must not become hard dependencies:
 ## Non-Negotiable Physics Invariants
 
 - Coordinate order is `(x, px, y, py, z, delta)`.
+- `z = s/beta0 - c*t = -c(t - t0)` is positive for an early particle and is
+  canonically paired with `delta`.
+- `delta` is `delta_E = (E - E0)/(P0*c)`, not `(P - P0)/P0`.
 - `Beam.energy` is kinetic energy in eV, not total energy or momentum.
 - `Beam.mass` is rest-mass energy in eV.
 - Scalar CPU tracking is the behavioral reference.
 - The default drift uses the exact relativistic Hamiltonian.
+- JuTrack parity is only normative where JuTrack uses the same canonical
+  variables. Mixed-convention maps are compared in the ultrarelativistic limit;
+  finite-`beta` behavior follows `docs/src/conventions.md` and canonical tests.
 - `Sextupole.k2` and `Octupole.k3` are normalized strengths; tracking applies
   the `1/2!` and `1/3!` polynomial factors internally.
 - `RFCavity.lag` is a longitudinal offset in metres, not radians or cycles.
 - `RFCavity.energy > 0` and the correct reference charge are required for an RF
   kick in directly constructed cavities.
+- RF kicks are normalized by `P0*c`, computed from reference kinetic energy and
+  `beta`; do not restore JuTrack's `K0*beta0^2` approximation.
 - Unsupported GPU elements/settings must throw during `GPULattice`
   construction. Never substitute a drift or marker silently.
 - PALS `Patch` is a physical reference-frame transformation. Consumer adapters

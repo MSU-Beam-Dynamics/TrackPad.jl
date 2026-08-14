@@ -2,19 +2,21 @@
 
 TrackPad is a Julia accelerator tracking library for canonical 6D particle
 tracking and linear optics. It provides optional GPU batch tracking, Enzyme
-derivatives, and TPSA maps through PolySeries while keeping scalar CPU tracking
-as the behavioral reference.
+derivatives, and TPSA maps through PolySeries while keeping the traditional
+scalar CPU tracking.
 
-## Status
+## Requirements
 
 - Julia: 1.10 or newer
-- CPU tracking: primary reference implementation
-- GPU backends: Apple Metal (`Float32`) and NVIDIA CUDA (`Float32`/`Float64`)
-- File interchange: documented PALS and MAD-X subsets
-- Optional extensions: CUDA, Metal, Enzyme, and PolySeries
+- Optional: CUDA.jl, Metal.jl, Enzyme.jl, PolySeries.jl
 
-Unsupported GPU element settings are rejected when a `GPULattice` is built;
-they are not silently approximated.
+## Features
+- TPSA tracking through PolySeries.jl
+- Automatic differentiation through Enzyme.jl
+- GPU backends: Apple Metal (`Float32`) and NVIDIA CUDA (`Float32`/`Float64`), Note: Not all elements are supported on GPU yet, Unsupported GPU element settings are rejected when a `GPULattice` is built.
+- File interchange: documented PALS and MAD-X subsets
+
+
 
 ## Installation
 
@@ -54,9 +56,11 @@ twiss = periodic_twiss(ring, beam)
 orbit = find_closed_orbit_4d(ring, beam)
 ```
 
-The phase-space order is `(x, px, y, py, z, delta)`. Positions are metres,
-transverse momenta are normalized by reference momentum, and `delta` is the
-relative momentum deviation. Read `docs/src/conventions.md` before comparing
+The phase-space coordinates are
+`($x$, $p_x$, $y$, $p_y$, $z=s/\beta_0-ct$, $\delta_E=(E-E_0)/(P_0c)$)`.
+TrackPad does not store the relative momentum deviation
+`$\delta_P=(P-P_0)/P_0$`; only to first order is
+`$\delta_E=\beta_0\delta_P$`. Read `docs/src/conventions.md` before comparing
 results with another code.
 
 ## Choose an API
