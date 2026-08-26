@@ -55,6 +55,7 @@ export Wiggler, CrabCavity, AccelCavity, LongitudinalRFMap
 export LorentzBoost, InvLorentzBoost
 export StrongThinGaussianBeam, StrongGaussianBeam
 export LongitudinalRLCWake, LongitudinalWake, wakefieldfunc_RLCWake, wakefieldfunc
+export physical_wake_scale
 export TimeContext, TimeFunction, TimeDependentParam, Time, RealTime, Turn
 export teval, time_lower, static_timecheck
 export TimeVaryingElement, timed, materialize

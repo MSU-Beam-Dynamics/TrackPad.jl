@@ -285,6 +285,11 @@ function linepass!(coords::Matrix{T}, lat::Lattice, beam::Beam{T},
     
     for elem in lat.elements
         elem_now = _resolve_for_time(elem, ctx)
+        # Collective elements need the whole bunch, not one particle at a time.
+        if elem_now isa Union{LongitudinalRLCWake, LongitudinalWake}
+            _apply_longitudinal_wake!(coords, lost_flags, nparticles, elem_now)
+            continue
+        end
         for i in 1:nparticles
             if lost_flags[i] == 1
                 continue
@@ -336,6 +341,41 @@ function ringpass!(coords::Matrix{T}, lat::Lattice, beam::Beam{T},
         trn += 1
     end
     return nothing
+end
+
+# =============================================================================
+# Collective-element helpers
+# =============================================================================
+
+"""
+    physical_wake_scale(beam::Beam, bunch_charge::Real, nmacro::Integer)
+
+Recommended `scale` for `LongitudinalRLCWake`/`LongitudinalWake` when the
+Green function carries physical units (V/C, e.g. an `Rshunt` in ohms) and a
+bunch of total charge `bunch_charge` [C] is represented by `nmacro` equal
+macroparticles:
+
+    scale = qhat * Qmacro / (P0*c)
+    Qmacro = bunch_charge / nmacro
+
+Here `qhat = beam.charge` is the signed reference-particle charge in elementary
+charge units, `Qmacro` is the signed source-macroparticle charge in C, and
+`P0*c = beta0*(energy + mass)` is in eV. Since a V/C Green function multiplied
+by `Qmacro` gives volts, multiplication by `qhat` gives the test particle's
+energy change in eV. For a bunch made of the reference species,
+`bunch_charge` and `beam.charge` have the same sign, giving a positive scale
+and a decelerating kick through `delta -= scale * V(z)`.
+"""
+function physical_wake_scale(beam::Beam{T}, bunch_charge::Real,
+                             nmacro::Integer) where T
+    nmacro > 0 || throw(ArgumentError("nmacro must be positive"))
+    isfinite(bunch_charge) || throw(ArgumentError("bunch_charge must be finite"))
+    isfinite(beam.charge) || throw(ArgumentError("beam charge must be finite"))
+    p0c = beam.beta * (beam.energy + beam.mass)
+    isfinite(p0c) && p0c > zero(T) ||
+        throw(ArgumentError("reference beam momentum P0*c must be finite and positive"))
+    qmacro = T(bunch_charge) / T(nmacro)
+    return beam.charge * qmacro / p0c
 end
 
 # =============================================================================

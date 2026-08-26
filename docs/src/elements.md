@@ -185,9 +185,34 @@ StrongGaussianBeam
 
 ## Wake / Impedance Elements
 
+`LongitudinalRLCWake` (RLC resonator model) and `LongitudinalWake` (tabulated
+`times`/`wakefields` samples) provide longitudinal wake **Green functions**.
+The wake potential is not evaluated per particle: tracking convolves the Green
+function with a cloud-in-cell histogram of `r[5]` (`nbins` uniform bins over
+the alive-particle range, padded by one bin width on each side), reconstructs
+the potential at bin edges, and applies the interpolated potential as an
+energy kick at each macroparticle's own coordinate. Use
+`physical_wake_scale(beam, bunch_charge, nmacro)` to obtain the physically
+normalized `scale` for a Green function in V/C. See the [wake convolution
+convention](@ref conventions) for the normative sign, delay, and `scale`
+normalization.
+
+For `LongitudinalWake`, `times` must start at zero and increase strictly; with
+the default `fliphalf=-1`, they tabulate nonnegative source-to-test delays.
+Values outside the tabulated interval are linearly extrapolated.
+
+Because the kick is collective, these elements require multi-particle
+tracking: `linepass!`, `ringpass!`. Single-particle `linepass`/`ringpass`,
+TPSA maps, and GPU tracking reject them. Choose `nbins` so that each bin is
+populated by many macroparticles; sparsely populated edge bins have their
+kick smoothed at the bin scale.
+
 ```@docs
 LongitudinalRLCWake
 LongitudinalWake
+wakefieldfunc_RLCWake
+wakefieldfunc
+physical_wake_scale
 ```
 
 ## Wiggler

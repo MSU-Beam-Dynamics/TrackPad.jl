@@ -104,8 +104,22 @@ end
         _assert_parity("LBend", LBend(0.7, 0.0; K = 0.0), JuTrack.LBEND(len = 0.7, angle = 0.0, K = 0.0))
         _assert_parity("SpaceCharge", SpaceCharge(0.9; effective_len = 0.4, Nl = 11, Nm = 9, a = 0.015, b = 0.017), JuTrack.SPACECHARGE(len = 0.9, effective_len = 0.4, Nl = 11, Nm = 9, a = 0.015, b = 0.017))
 
-        # Collective/wake models with strict zero-kick settings.
-        _assert_parity("LongitudinalRLCWake", LongitudinalRLCWake(freq = 1.0e9, Rshunt = 0.0, Q0 = 1.2, scale = 1.0), JuTrack.LongitudinalRLCWake(freq = 1.0e9, Rshunt = 0.0, Q0 = 1.2))
+        # JuTrack has a Float64 collective RLC pass, but its Beam-owned grid,
+        # normalization, and longitudinal coordinate differ from TrackPad's.
+        # A zero wake therefore checks tracking plumbing, while the Green
+        # functions themselves are compared directly at nonzero strength.
+        tp_rlc_zero = LongitudinalRLCWake(freq = 1.0e9, Rshunt = 0.0,
+                                          Q0 = 1.2, scale = 1.0)
+        jt_rlc_zero = JuTrack.LongitudinalRLCWake(freq = 1.0e9,
+                                                  Rshunt = 0.0, Q0 = 1.2)
+        _assert_parity("LongitudinalRLCWake", tp_rlc_zero, jt_rlc_zero)
+        tp_rlc = LongitudinalRLCWake(freq = 1.0e9, Rshunt = 1.0e6, Q0 = 1.2)
+        jt_rlc = JuTrack.LongitudinalRLCWake(freq = 1.0e9,
+                                             Rshunt = 1.0e6, Q0 = 1.2)
+        for t in (-2.0e-9, -1.0e-10, 0.0, 1.0e-10)
+            @test wakefieldfunc_RLCWake(tp_rlc, t) ≈
+                  JuTrack.wakefieldfunc_RLCWake(jt_rlc, t) rtol = 1.0e-15
+        end
         tp_sgb = StrongGaussianBeam(0.0, TrackPad.M_ELECTRON, 1.0, 1_000_000, ENERGY_VAL, [1e-3, 1.2e-3]; nzslice = 3)
         jt_op = JuTrack.optics4DUC(1.0, 0.0, 1.0, 0.0)
         jt_sgb = JuTrack.StrongGaussianBeam(0.0, JuTrack.m_e, 1.0, 1_000_000, ENERGY_VAL, jt_op, [1e-3, 1.2e-3], 3)
@@ -183,6 +197,224 @@ end
     boosted = pass!(LorentzBoost(0.03), reference, beti)
     restored = pass!(InvLorentzBoost(0.03), boosted, beti)
     @test restored ≈ reference atol=1.0e-15
+end
+
+# Reference implementation of the collective wake kick: cloud-in-cell
+# deposition about the nearest bin center on a one-bin-padded grid, discrete
+# convolution against the Green function, bin-edge reconstruction of the
+# potential, and per-particle linear interpolation. Mirrors src/tracking.jl
+# so the tests pin the documented numerics.
+function _wake_reference_kicks(wake::Union{LongitudinalRLCWake, LongitudinalWake},
+                               zs::AbstractVector{Float64})
+    nb = wake.nbins
+    green(t) = wake isa LongitudinalRLCWake ?
+        wakefieldfunc_RLCWake(wake, t) : wakefieldfunc(wake, t)
+    zmin, zmax = extrema(zs)
+    if zmax > zmin
+        span = zmax - zmin
+        dz_pad = span / nb
+        z0 = zmin - dz_pad
+        dz = (span + 2 * dz_pad) / nb
+        hist = zeros(nb)
+        bins = zeros(Int, length(zs))
+        if nb == 1
+            hist[1] = length(zs)
+            bins .= 1
+        else
+            for (i, z) in enumerate(zs)
+                s = (z - z0) / dz
+                m = clamp(round(Int, s - 0.5) + 1, 1, nb)
+                d = s - (m - 0.5)
+                bins[i] = floor(Int, s) + 1
+                hist[m] += 1 - abs(d)
+                if d > 0
+                    hist[m+1] += d
+                elseif d < 0
+                    hist[m-1] -= d
+                end
+            end
+        end
+        zc(k) = z0 + (k - 0.5) * dz
+        pot = [sum(hist[j] * green((zc(k) - zc(j)) / TrackPad.C_LIGHT)
+                   for j in 1:nb) for k in 1:nb]
+        edges = zeros(nb + 1)
+        if nb == 1
+            edges .= pot[1]
+        elseif nb == 2
+            edges[1] = (3 * pot[1] - pot[2]) / 2
+            edges[2] = (pot[1] + pot[2]) / 2
+            edges[3] = (3 * pot[2] - pot[1]) / 2
+        else
+            for k in 2:nb
+                edges[k] = (pot[k - 1] + pot[k]) / 2
+            end
+            edges[1] = 2 * edges[2] - edges[3]
+            edges[end] = 2 * edges[end - 1] - edges[end - 2]
+        end
+        return [-wake.scale *
+                (edges[b] + (edges[b + 1] - edges[b]) * (z - (z0 + (b - 1) * dz)) / dz)
+                for (z, b) in zip(zs, bins)]
+    else
+        return fill(-wake.scale * length(zs) * green(0.0), length(zs))
+    end
+end
+
+@testset "Longitudinal wake convolution" begin
+    # The wake Green function must be convolved with the histogram of r[5],
+    # not evaluated at a particle's own coordinate.
+    beam = Beam(ENERGY_VAL)
+
+    @testset "constructor validation" begin
+        @test_throws ArgumentError LongitudinalRLCWake(nbins = 0)
+        @test_throws ArgumentError LongitudinalRLCWake(freq = 0.0)
+        @test_throws ArgumentError LongitudinalRLCWake(Rshunt = -1.0)
+        @test_throws ArgumentError LongitudinalRLCWake(Q0 = 0.5)
+        @test_throws ArgumentError LongitudinalRLCWake(Q0 = 0.4)
+        @test_throws ArgumentError LongitudinalRLCWake(scale = Inf)
+        @test_throws ArgumentError LongitudinalWake([0.0, 1.0], [1.0, 2.0]; nbins = 0)
+        @test_throws ArgumentError LongitudinalWake([1.0, 2.0], [1.0, 2.0])
+        @test_throws ArgumentError LongitudinalWake([0.0, 0.0], [1.0, 2.0])
+        @test_throws ArgumentError LongitudinalWake([0.0, 2.0, 1.0], [1.0, 2.0, 3.0])
+        @test_throws ArgumentError LongitudinalWake([0.0, Inf], [1.0, 2.0])
+        @test_throws ArgumentError LongitudinalWake([0.0, 1.0], [1.0, NaN])
+        @test_throws ArgumentError LongitudinalWake([0.0, 1.0], [1.0, 2.0]; fliphalf = 1.0)
+        @test_throws ArgumentError LongitudinalWake([0.0, 1.0], [1.0, 2.0]; scale = NaN)
+    end
+
+    @testset "RLC convolution with cloud-in-cell deposition" begin
+        wake = LongitudinalRLCWake(freq = 1.0e9, Rshunt = 1.0e6, Q0 = 10.0,
+                                   scale = 2.5, nbins = 4)
+        zs = [0.0, 1.5e-3, 2.5e-3, 4.0e-3]
+        coords = [zeros(4) zeros(4) zeros(4) zeros(4) zs fill(0.1, 4)]
+        lost = zeros(Int, 4)
+        linepass!(coords, Lattice([wake]), beam, lost)
+
+        expected = 0.1 .+ _wake_reference_kicks(wake, zs)
+        @test coords[:, 6] ≈ expected atol = 1.0e-12 rtol = 1.0e-12
+        # Trailing particles lose more energy than the leading one.
+        @test coords[4, 6] > coords[1, 6]
+    end
+
+    @testset "causality and self term" begin
+        # NOTE: with only a handful of macroparticles the grid-based kick of
+        # an isolated edge particle is smoothed at the bin scale (as in
+        # JuTrack's histogram scheme), so sparse-bunch kicks are only pinned
+        # against the reference implementation, not against W(0).
+        wake = LongitudinalRLCWake(freq = 1.0e9, Rshunt = 1.0e6, Q0 = 10.0,
+                                   scale = 1.0, nbins = 4)
+        w0 = wakefieldfunc_RLCWake(wake, 0.0)
+        # Leader alone: degenerate single-position bunch -> every particle
+        # sees N * W(0) exactly, independent of any grid choice.
+        leader_only = reshape([0.0, 0.0, 0.0, 0.0, 4.0e-3, 0.05], 1, 6)
+        linepass!(leader_only, Lattice([wake]), beam, zeros(Int, 1))
+        @test leader_only[1, 6] ≈ 0.05 - w0 atol = 1.0e-12
+
+        # Adding a trailer behind must give the trailer extra energy loss
+        # while the leading particle keeps the smaller shared-grid kick.
+        pair = [0.0 0.0 0.0 0.0 4.0e-3  0.05
+                0.0 0.0 0.0 0.0 3.9e-3  0.05]
+        linepass!(pair, Lattice([wake]), beam, zeros(Int, 2))
+        expected = 0.05 .+ _wake_reference_kicks(wake, [4.0e-3, 3.9e-3])
+        @test pair[:, 6] ≈ expected atol = 1.0e-12 rtol = 1.0e-12
+        @test pair[2, 6] < pair[1, 6] < 0.05
+    end
+
+    @testset "tabulated wake convolution" begin
+        tw = LongitudinalWake([0.0, 5.0e-9], [2.0, 1.0]; scale = 1.5, nbins = 2)
+        @test wakefieldfunc(tw, -10.0e-9) ≈ 0.0 atol = 1.0e-15
+        # Separation 1 m -> delay 1/c ≈ 3.33 ns, inside the table.
+        # z is positive for early particles: the z = 1 particle leads.
+        coords = [0.0 0.0 0.0 0.0 0.0 0.2
+                  0.0 0.0 0.0 0.0 1.0 0.2]
+        linepass!(coords, Lattice(AbstractElement[tw]), beam, zeros(Int, 2))
+        expected = 0.2 .+ _wake_reference_kicks(tw, [0.0, 1.0])
+        @test coords[:, 6] ≈ expected atol = 1.0e-12 rtol = 1.0e-12
+        # The trailer feels its own bin plus the leading bin; the leader has
+        # no sources ahead of it and loses less energy.
+        @test coords[1, 6] < coords[2, 6] < 0.2 + 1.0e-12
+    end
+
+    @testset "sparse and small-bin grids" begin
+        # A constant causal Green function makes every target grid point at or
+        # behind a populated source nonzero, including currently empty bins.
+        constant_wake(nb) = LongitudinalWake(
+            [0.0, 10.0e-9], [1.0, 1.0]; scale = 1.0, nbins = nb)
+        zs = [0.0, 1.0]
+
+        sparse = [zeros(2) zeros(2) zeros(2) zeros(2) zs zeros(2)]
+        linepass!(sparse, Lattice([constant_wake(8)]), beam, zeros(Int, 2))
+        @test sparse[:, 6] ≈ _wake_reference_kicks(constant_wake(8), zs)
+
+        one_bin = [zeros(2) zeros(2) zeros(2) zeros(2) zs zeros(2)]
+        linepass!(one_bin, Lattice([constant_wake(1)]), beam, zeros(Int, 2))
+        @test one_bin[:, 6] == [-2.0, -2.0]
+
+        two_bins = [zeros(2) zeros(2) zeros(2) zeros(2) zs zeros(2)]
+        linepass!(two_bins, Lattice([constant_wake(2)]), beam, zeros(Int, 2))
+        @test all(isfinite, two_bins[:, 6])
+        @test two_bins[:, 6] ≈ _wake_reference_kicks(constant_wake(2), zs)
+    end
+
+    @testset "bin resolution convergence" begin
+        # A smooth RLC Green function on a uniform bunch: refining the
+        # histogram must converge the interpolated kicks.
+        zs = collect(range(0.0, 4.0e-3; length = 32))
+        kicks(nb) = _wake_reference_kicks(
+            LongitudinalRLCWake(freq = 1.0e9, Rshunt = 1.0e6, Q0 = 10.0,
+                                scale = 1.0, nbins = nb), zs)
+        fine = kicks(128)
+        d_coarse = maximum(abs.(kicks(4) .- fine))
+        d_medium = maximum(abs.(kicks(16) .- fine))
+        @test d_medium <= d_coarse
+        @test d_medium <= 5.0e-2 * maximum(abs.(fine))
+    end
+
+    @testset "physical_wake_scale" begin
+        beam_e = Beam(ENERGY_VAL)
+        bunch_charge = -1.0e-9
+        nmacro = 1000
+        p0c = beam_e.beta * (beam_e.energy + beam_e.mass)
+        sc = physical_wake_scale(beam_e, bunch_charge, nmacro)
+        # W [V/C] * Qmacro [C] * q/e gives an energy change in eV.
+        expected = beam_e.charge * (bunch_charge / nmacro) / p0c
+        @test sc ≈ expected rtol = 1.0e-15
+        @test sc > 0
+        @test_throws ArgumentError physical_wake_scale(beam_e, 1.0e-9, 0)
+        @test_throws ArgumentError physical_wake_scale(beam_e, Inf, 1000)
+        @test_throws ArgumentError physical_wake_scale(Beam(0.0), -1.0e-9, 1000)
+        @test_throws ArgumentError physical_wake_scale(
+            Beam(ENERGY_VAL; charge = Inf), -1.0e-9, 1000)
+        @test physical_wake_scale(beam_e, 2 * bunch_charge, nmacro) ≈ 2 * sc
+
+        # Like-sign electron and positive-charge bunches both decelerate for a
+        # positive wake; inconsistent source/test signs reverse the kick.
+        beam_p = Beam(ENERGY_VAL; charge = 1.0)
+        @test physical_wake_scale(beam_p, -bunch_charge, nmacro) ≈ sc
+        @test physical_wake_scale(beam_p, bunch_charge, nmacro) ≈ -sc
+
+        wake = LongitudinalRLCWake(freq = 1.0e9, Rshunt = 1.0e6, Q0 = 10.0,
+                                   scale = sc, nbins = 64)
+        coords = [zeros(2) zeros(2) zeros(2) zeros(2) [3.9e-3, 4.0e-3] zeros(2)]
+        linepass!(coords, Lattice([wake]), beam_e, zeros(Int, 2))
+        @test coords[1, 6] < 0.0  # trailer loses energy
+        @test coords[2, 6] > coords[1, 6]
+    end
+
+    @testset "zero scale is a no-op" begin
+        wake = LongitudinalRLCWake(freq = 1.0e9, Rshunt = 1.0e6, Q0 = 10.0,
+                                   scale = 0.0)
+        coords = [0.0 0.0 0.0 0.0 1.0e-3 0.3
+                  0.0 0.0 0.0 0.0 2.0e-3 0.4]
+        ref = copy(coords)
+        linepass!(coords, Lattice([wake]), beam, zeros(Int, 2))
+        @test coords == ref
+    end
+
+    @testset "single-particle tracking rejects collective element" begin
+        wake = LongitudinalRLCWake(freq = 1.0e9, Rshunt = 1.0e6, Q0 = 10.0, scale = 1.0)
+        lat = Lattice(AbstractElement[Drift(0.1), wake])
+        @test_throws ArgumentError linepass(lat, SVector(0.0, 0.0, 0.0, 0.0, 1.0e-3, 0.0), beam)
+    end
 end
 
 @testset "Element Gaps" begin

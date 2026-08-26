@@ -134,11 +134,71 @@ model-specific normalization audit:
 - the drift selected by `USE_EXACT_HAMILTONIAN=false`, which deliberately uses
   the ultrarelativistic ``p\simeq1+\delta_E`` Hamiltonian;
 - the Brown/SOLEIL/THOMX bend fringe-field models; and
-- synchrotron-radiation, wake, and collective kicks.
+- synchrotron-radiation and other collective kicks (longitudinal wakes follow
+  the normative convention below).
 
 Do not infer finite-energy validity solely from historical JuTrack parity.
 JuTrack comparisons are exact only in the shared ultrarelativistic limit when
 the reference implementation mixes ``\delta_P`` and ``\delta_E`` conventions.
+
+### Longitudinal wake convolution
+
+`LongitudinalRLCWake` and `LongitudinalWake` supply Green functions, not wake
+potentials. With the delay argument
+
+```math
+t = \frac{z_{\mathrm{test}} - z_{\mathrm{source}}}{c},
+```
+
+the Green functions vanish for ``t > 0``: a particle feels only sources ahead
+of it. The longitudinal wake potential is the discrete convolution of the
+Green function ``W`` with the bunch profile obtained from a cloud-in-cell
+histogram of ``r_5 = z`` over all alive macroparticles:
+
+```math
+V_k = \sum_j N_j \, W\!\left(\frac{z_k - z_j}{c}\right),
+```
+
+where ``N_j`` is the (possibly fractional) cloud-in-cell weight in histogram
+bin ``j`` and ``z_k``, ``z_j`` are uniform bin-center coordinates. The grid
+uses `nbins` bins per element and is padded by one nominal bin width beyond
+the alive-particle range on each side, so every deposition neighbor and the
+edge reconstruction stay inside the grid. As in JuTrack, ``V`` is averaged
+onto bin edges and every macroparticle receives the edge-interpolated value at
+its own coordinate. TrackPad deliberately uses a translation-invariant range
+and linear cloud-in-cell weights; JuTrack instead uses a zero-centered range
+and quadratic neighbor weights. The resulting kick is
+
+```math
+\Delta\delta_i = -\texttt{scale} \cdot V(z_i).
+```
+
+The convolution includes each particle's own bin (self term at zero delay).
+Each macroparticle carries equal charge; `scale` absorbs the macroparticle
+charge, the ``1/(P_0 c)`` kick normalization, and any additional user factor.
+`physical_wake_scale(beam, bunch_charge, nmacro)` returns the physically
+normalized value for a Green function in V/C:
+
+```math
+\texttt{scale}
+= \frac{\widehat q\,Q_{\mathrm{macro}}}{P_0c},
+\qquad
+Q_{\mathrm{macro}}
+= \frac{Q_{\mathrm{bunch}}}{N_{\mathrm{macro}}},
+```
+
+where ``\widehat q=q/e`` is the signed reference-particle charge stored in
+`beam.charge`, ``Q_{\mathrm{bunch}}`` and ``Q_{\mathrm{macro}}`` are signed
+charges in C, and ``P_0c=\beta_0E_0`` is in eV. Multiplying a V/C Green
+function by ``Q_{\mathrm{macro}}`` gives volts; multiplying by ``\widehat q``
+gives the test-particle energy change in eV. Thus like-sign source and test
+particles give a positive scale and a positive wake decelerates through the
+minus sign in the tracking kick.
+
+Because the kick is collective, single-particle tracking (`linepass`,
+`ringpass`, TPSA maps) rejects these elements; use the ``N\times 6``
+multi-particle APIs. GPU tracking rejects them during `GPULattice`
+construction.
 
 ### Compatibility with earlier TrackPad versions
 
@@ -162,6 +222,17 @@ tracking results from bends, RF cavities, solenoids, correctors, linear bends,
 or wigglers. Those maps now use the exact ``\delta_E``-to-momentum conversion
 described above, so there is no coordinate-only conversion for an already
 tracked trajectory.
+
+Collective longitudinal-wake kicks changed numerics: earlier versions used
+nearest-bin deposition with a piecewise-constant per-bin kick over an
+unpadded grid; current versions use cloud-in-cell deposition and a
+bin-edge-interpolated kick on a padded grid. The edge interpolation follows
+JuTrack, while the translation-invariant range and linear deposition do not.
+Both schemes approach the same continuum wake potential when bins are densely
+populated; like JuTrack's histogram scheme, both smooth the kick of
+sparsely populated edge bins at the bin scale, so choose `nbins` such that
+many macroparticles populate each bin. Stored single-pass results differ at
+the order of the old bin width. No input conversion is required.
 
 ## Reference Beam
 

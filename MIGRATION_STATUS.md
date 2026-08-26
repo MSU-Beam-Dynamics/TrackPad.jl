@@ -35,7 +35,17 @@
 - Non-canonical JuTrack element variants remain intentionally excluded.
 - `LongitudinalWake` and `StrongThinGaussianBeam` cannot currently be compared
   with Float64 JuTrack tracking because JuTrack lacks the required `pass!`
-  methods.
+  methods. `LongitudinalRLCWake` tracking parity uses `Rshunt = 0` (zero kick)
+  to validate plumbing, while its nonzero Green function is compared directly;
+  TrackPad's wake semantics are collective
+  (cloud-in-cell histogram of `r[5]` convolved with the wake Green function,
+  with bin-edge-interpolated kicks) and are covered by dedicated convolution
+  tests instead. Bin-edge reconstruction and per-particle interpolation follow
+  JuTrack's scheme; TrackPad uses a translation-invariant padded grid and
+  linear cloud-in-cell deposition instead of JuTrack's zero-centered grid and
+  quadratic neighbor weights. `physical_wake_scale(beam, bunch_charge,
+  nmacro)` provides the physically normalized kick scale for TrackPad's
+  `delta_E` convention.
 
 ## Phase Status
 
@@ -107,7 +117,8 @@ No numerical or test-integration failures were observed.
 - `test/verify_elements.jl` uses `PARITY_ATOL = 1e-15`.
 - The migrated element comparisons pass at that threshold.
 - Intentional gaps:
-  - `LongitudinalWake`: JuTrack lacks Float64 `pass!` support.
+  - `LongitudinalWake`: JuTrack lacks Float64 `pass!` support; the collective
+    histogram/convolution semantics are covered by dedicated TrackPad tests.
   - `StrongThinGaussianBeam`: JuTrack lacks Float64 `pass!` support.
 
 ### Optics and Map Parity

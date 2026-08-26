@@ -1824,20 +1824,168 @@ end
 # Longitudinal Wake models
 # =============================================================================
 
-function pass!(elem::LongitudinalRLCWake{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
-    if iszero(elem.scale)
-        return r
-    end
-    t = min(-r[5] / T(C_LIGHT), zero(T))
-    delta_new = r[6] - elem.scale * wakefieldfunc_RLCWake(elem, t)
-    return SVector{6, T}(r[1], r[2], r[3], r[4], r[5], delta_new)
+# The RLC and tabulated wake functions are Green functions W(t) of the delay
+# t = (z_test - z_source)/c. They vanish for t > 0: a particle only feels
+# sources ahead of it. The longitudinal wake potential is the discrete
+# convolution of the Green function with the bunch profile, obtained from a
+# cloud-in-cell histogram of r[5] over all macroparticles:
+#
+#     V_k = sum_j N_j * W((z_k - z_j)/c),   z_k = bin-center coordinates
+#
+# As in JuTrack, V is averaged onto bin edges and every macroparticle receives
+# the edge-interpolated potential at its own coordinate. TrackPad uses a
+# translation-invariant padded range and linear cloud-in-cell deposition rather
+# than JuTrack's zero-centered range and quadratic neighbor weights:
+#
+#     delta_i -= scale * V(z_i)
+#
+# The cloud-in-cell deposition and sub-bin interpolation remove the binning
+# noise and staircase artifacts of a nearest-bin, piecewise-constant kick.
+# Each macroparticle carries equal charge; `scale` absorbs q_macro/(P0*c) and
+# any additional user normalization (`physical_wake_scale` computes the
+# physically normalized value).
+
+# Single-particle application (scalar CPU or TPSA) cannot represent a
+# convolution over the bunch, so it is rejected outright.
+function pass!(::Union{LongitudinalRLCWake, LongitudinalWake}, ::SVector{6},
+               ::Any=one(Float64))
+    throw(ArgumentError(
+        "longitudinal wake elements are collective: the kick requires the " *
+        "convolution of the wake Green function with the histogram of r[5] " *
+        "over all macroparticles. Use linepass!/ringpass! with an N x 6 " *
+        "particle matrix instead of single-particle tracking."))
 end
 
-function pass!(elem::LongitudinalWake{T,N,V}, r::SVector{6,S}, beti::T=one(T)) where {T,N,V,S}
-    if iszero(elem.scale)
-        return r
+# Per-bin potential for one concrete element type (function barrier).
+# `hist` holds cloud-in-cell weights (fractional counts) on a uniform grid with
+# spacing `dz`.
+function _wake_potential!(potential::AbstractVector{T}, hist::AbstractVector{T},
+                          dz::T, elem::LongitudinalRLCWake{T}) where T
+    fill!(potential, zero(T))
+    nb = length(potential)
+    dt = dz / T(C_LIGHT)
+    @inbounds for k in 1:nb
+        acc = zero(T)
+        for j in k:nb
+            hist[j] == 0 && continue
+            acc += hist[j] * wakefieldfunc_RLCWake(elem, T(k - j) * dt)
+        end
+        potential[k] = acc
     end
-    t = -r[5] / T(C_LIGHT)
-    delta_new = r[6] - elem.scale * wakefieldfunc(elem, t)
-    return SVector{6, T}(r[1], r[2], r[3], r[4], r[5], delta_new)
+    return nothing
+end
+
+function _wake_potential!(potential::AbstractVector{T}, hist::AbstractVector{T},
+                          dz::T, elem::LongitudinalWake{T}) where T
+    fill!(potential, zero(T))
+    nb = length(potential)
+    dt = dz / T(C_LIGHT)
+    @inbounds for k in 1:nb
+        acc = zero(T)
+        for j in k:nb
+            hist[j] == 0 && continue
+            acc += hist[j] * wakefieldfunc(elem, T(k - j) * dt)
+        end
+        potential[k] = acc
+    end
+    return nothing
+end
+
+"""
+Apply the collective longitudinal wake kick to all alive particles in
+`coords`.
+
+The bunch profile is deposited into `elem.nbins` uniform bins spanning the
+alive-particle range padded by one nominal bin width on each side, using
+cloud-in-cell (linear two-point) weights. The convolved potential is averaged
+onto bin edges and each particle receives the linearly interpolated value at
+its own coordinate; `delta -= elem.scale * V(z)`.
+"""
+function _apply_longitudinal_wake!(coords::Matrix{T}, lost_flags::AbstractVector{<:Integer},
+                                   nparticles::Int, elem) where {T}
+    iszero(elem.scale) && return nothing
+
+    zmin = typemax(T)
+    zmax = typemin(T)
+    nalive = 0
+    @inbounds for i in 1:nparticles
+        lost_flags[i] == 1 && continue
+        z = coords[i, 5]
+        z < zmin && (zmin = z)
+        z > zmax && (zmax = z)
+        nalive += 1
+    end
+    nalive > 0 || return nothing  # no alive particles
+
+    nb = elem.nbins
+
+    if zmax > zmin
+        span = zmax - zmin
+        # Pad the grid by one nominal bin width on each side so cloud-in-cell
+        # neighbor deposits and edge extrapolation stay inside the grid.
+        dz_pad = span / nb
+        z0 = zmin - dz_pad
+        dz = (span + 2 * dz_pad) / nb
+
+        hist = zeros(T, nb)
+        if nb == 1
+            hist[1] = T(nalive)
+        else
+            # Cloud-in-cell deposition about the nearest bin center: each
+            # macro splits its unit weight linearly between adjacent centers.
+            @inbounds for i in 1:nparticles
+                lost_flags[i] == 1 && continue
+                s = (coords[i, 5] - z0) / dz
+                m = clamp(round(Int, s - T(0.5)) + 1, 1, nb)
+                d = s - (T(m) - T(0.5))
+                hist[m] += one(T) - abs(d)
+                if d > zero(T)
+                    hist[m+1] += d
+                elseif d < zero(T)
+                    hist[m-1] -= d
+                end
+            end
+        end
+
+        potential = zeros(T, nb)
+        _wake_potential!(potential, hist, dz, elem)
+
+        # Potential at bin edges: averages of adjacent bin-center values,
+        # linearly extrapolated through both boundary edges.
+        edges = Vector{T}(undef, nb + 1)
+        if nb == 1
+            edges[1] = edges[2] = potential[1]
+        elseif nb == 2
+            edges[1] = (T(3) * potential[1] - potential[2]) / T(2)
+            edges[2] = (potential[1] + potential[2]) / T(2)
+            edges[3] = (T(3) * potential[2] - potential[1]) / T(2)
+        else
+            @inbounds for k in 2:nb
+                edges[k] = (potential[k - 1] + potential[k]) / T(2)
+            end
+            edges[1] = 2 * edges[2] - edges[3]
+            edges[nb+1] = 2 * edges[nb] - edges[nb - 1]
+        end
+
+        @inbounds for i in 1:nparticles
+            lost_flags[i] == 1 && continue
+            s = (coords[i, 5] - z0) / dz
+            b = clamp(floor(Int, s) + 1, 1, nb)
+            w = edges[b] + (edges[b + 1] - edges[b]) *
+                (coords[i, 5] - (z0 + (b - 1) * dz)) / dz
+            coords[i, 6] -= elem.scale * w
+        end
+    else
+        # Degenerate bunch (all alive particles share one z): every particle
+        # feels N * W(0) exactly, independent of any grid choice.
+        hist = T[nalive]
+        potential = zeros(T, 1)
+        _wake_potential!(potential, hist, one(T), elem)
+        kick = elem.scale * potential[1]
+        @inbounds for i in 1:nparticles
+            lost_flags[i] == 1 && continue
+            coords[i, 6] -= kick
+        end
+    end
+    return nothing
 end

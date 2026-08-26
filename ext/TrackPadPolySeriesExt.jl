@@ -625,27 +625,11 @@ function TrackPad.pass!(elem::StrongGaussianBeam{T,N,V}, r::SVector{6,CTPS{T}}, 
     return SVector{6,CTPS{T}}(r[1], px, r[3], py, r[5], r[6])
 end
 
-# ── LongitudinalRLCWake ──
-
-function TrackPad.pass!(elem::LongitudinalRLCWake{T,N}, r::SVector{6,CTPS{T}}, beti::T) where {T,N}
-    if iszero(elem.scale)
-        return r
-    end
-    t = min(-cst(r[5]) / T(TrackPad.C_LIGHT), zero(T))
-    delta_new = r[6] - elem.scale * TrackPad.wakefieldfunc_RLCWake(elem, t)
-    return SVector{6,CTPS{T}}(r[1], r[2], r[3], r[4], r[5], delta_new)
-end
-
-# ── LongitudinalWake ──
-
-function TrackPad.pass!(elem::LongitudinalWake{T,N,V}, r::SVector{6,CTPS{T}}, beti::T) where {T,N,V}
-    if iszero(elem.scale)
-        return r
-    end
-    t = -cst(r[5]) / T(TrackPad.C_LIGHT)
-    delta_new = r[6] - elem.scale * TrackPad.wakefieldfunc(elem, t)
-    return SVector{6,CTPS{T}}(r[1], r[2], r[3], r[4], r[5], delta_new)
-end
+# ── LongitudinalRLCWake / LongitudinalWake ──
+# Collective elements: the wake potential is the convolution of the wake Green
+# function with the histogram of r[5] over all macroparticles. A single TPSA
+# particle carries no bunch distribution, so TPSA wake tracking is rejected
+# (the base TrackPad.pass! methods throw ArgumentError).
 
 # ============================================================================
 # linepass / ringpass — extend originals, dispatch on CTPS automatically
