@@ -32,6 +32,22 @@ struct SBend{T, N} <: AbstractMagnet
     kick_angle::SVector{2, T}
 end
 
+"""
+    _bend_max_order(max_order, polynom_b) -> Int
+
+Raise the bend's multipole expansion order when higher multipoles are present
+in `polynom_b`, mirroring JuTrack's constructor logic (a gradient requires
+order >= 1, a sextupole-in-bend order >= 2, an octupole-in-bend order >= 3).
+Without this, a nonzero `polynom_b` would be silently ignored by the kick.
+"""
+@inline function _bend_max_order(max_order::Int, polynom_b::SVector{4,T}) where T
+    order = max_order
+    !iszero(polynom_b[2]) && (order = max(order, 1))
+    !iszero(polynom_b[3]) && (order = max(order, 2))
+    !iszero(polynom_b[4]) && (order = max(order, 3))
+    return order
+end
+
 function SBend(L, angle, e1 = 0.0, e2 = 0.0;
                name::Union{Symbol, String} = :SBEND,
                polynom_a = nothing, polynom_b = nothing,
@@ -47,9 +63,11 @@ function SBend(L, angle, e1 = 0.0, e2 = 0.0;
     T = _promote_element_type(L, angle, e1, e2, fint1, fint2, gap,
                      polynom_a, polynom_b, fringe_int_m0, fringe_int_p0,
                      t1, t2, r1, r2, r_apertures, e_apertures, kick_angle)
+    pb = SVector{4, T}(_default_vec(polynom_b, T, Val(4)))
+    max_order = _bend_max_order(max_order, pb)
     SBend{T, Symbol}(Symbol(name), T(L), T(angle), T(e1), T(e2),
         SVector{4, T}(_default_vec(polynom_a, T, Val(4))),
-        SVector{4, T}(_default_vec(polynom_b, T, Val(4))),
+        pb,
         max_order, num_int_steps, rad,
         T(fint1), T(fint2), T(gap), fringe_bend_entrance, fringe_bend_exit, fringe_quad_entrance, fringe_quad_exit,
         SVector{5, T}(_default_vec(fringe_int_m0, T, Val(5))),
@@ -131,9 +149,11 @@ function ExactSBend(L, angle, e1 = 0.0, e2 = 0.0;
     T = _promote_element_type(L, angle, e1, e2, fint1, fint2, gap,
                      polynom_a, polynom_b, fringe_int_m0, fringe_int_p0,
                      t1, t2, r1, r2, r_apertures, e_apertures, kick_angle, gk)
+    pb = SVector{4, T}(_default_vec(polynom_b, T, Val(4)))
+    max_order = _bend_max_order(max_order, pb)
     ExactSBend{T, Symbol}(Symbol(name), T(L), T(angle), T(e1), T(e2),
         SVector{4, T}(_default_vec(polynom_a, T, Val(4))),
-        SVector{4, T}(_default_vec(polynom_b, T, Val(4))),
+        pb,
         max_order, num_int_steps, rad,
         T(fint1), T(fint2), T(gap), fringe_bend_entrance, fringe_bend_exit, fringe_quad_entrance, fringe_quad_exit,
         SVector{5, T}(_default_vec(fringe_int_m0, T, Val(5))),

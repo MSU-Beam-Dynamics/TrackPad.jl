@@ -59,4 +59,62 @@ using Random
         @test M[1] isa CTPS
     end
 
+    @testset "Translation follows exact drift convention" begin
+        nv = 6
+        order = 4
+        ds = 3.0e-3
+        dx = 1.0e-3
+        dy = -2.0e-3
+        r0 = polyseries_variables(Float64; order=order)
+        beam = Beam(1.0e9)
+        translation_map = linepass(
+            Lattice([Translation(0.0; dx=dx, dy=dy, ds=ds)]), r0, beam)
+        drift_map = linepass(Lattice([Drift(ds)]), r0, beam)
+        point = SVector{nv,Float64}(1.0e-4, 2.0e-4, -3.0e-4,
+                                    1.5e-4, 4.0e-5, 2.0e-4)
+
+        translated = SVector{nv,Float64}(map(f -> f(point...), translation_map))
+        drifted = SVector{nv,Float64}(map(f -> f(point...), drift_map))
+        expected = setindex(setindex(drifted, drifted[1] - dx, 1),
+                            drifted[3] - dy, 3)
+        @test translated ≈ expected atol=1.0e-14
+
+        scalar = linepass(
+            Lattice([Translation(0.0; dx=dx, dy=dy, ds=ds)]), point, beam)
+        @test translated ≈ scalar atol=1.0e-14
+    end
+
+    @testset "Multipole fringes match scalar tracking" begin
+        nv = 6
+        order = 4
+        beam = Beam(1.0e9)
+        point = SVector{nv,Float64}(1.0e-4, 2.0e-4, -3.0e-4,
+                                    1.5e-4, 4.0e-5, 2.0e-4)
+        elements = AbstractElement[
+            Quadrupole(0.4, 1.3; fringe_entrance=1, fringe_exit=1),
+            Sextupole(0.4, 2.0; kick_angle=[1.2e-4, -0.8e-4],
+                       fringe_entrance=1, fringe_exit=1),
+            Octupole(0.4, -3.0; kick_angle=[-0.7e-4, 1.1e-4],
+                      fringe_entrance=1, fringe_exit=1),
+            SBend(0.9, 0.15, 0.03, 0.02;
+                  polynom_b=[0.0, 1.3, 0.0, 0.0],
+                  fringe_quad_entrance=1, fringe_quad_exit=1),
+        ]
+
+        # PolySeries caches Float64 workspaces by (variable count, order). Use a
+        # fresh descriptor per case so earlier TPSA tests cannot contaminate the
+        # fringe-map regression; the extra variables are inert.
+        for (case_index, elem) in enumerate(elements)
+            descriptor_nv = nv + case_index
+            set_descriptor!(descriptor_nv, order)
+            variables = SVector{nv,CTPS{Float64}}(
+                ntuple(i -> CTPS(point[i], i), nv))
+            lat = Lattice(AbstractElement[elem])
+            polynomial = linepass(lat, variables, beam)
+            evaluated = SVector{nv,Float64}(map(cst, polynomial))
+            scalar = linepass(lat, point, beam)
+            @test evaluated ≈ scalar atol=1.0e-12 rtol=1.0e-12
+        end
+    end
+
 end

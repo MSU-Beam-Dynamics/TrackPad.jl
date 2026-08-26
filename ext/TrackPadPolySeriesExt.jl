@@ -109,6 +109,74 @@ end
     return SVector{6,CTPS{T}}(r[1], px_new, r[3], py_new, z_new, r[6])
 end
 
+@inline function multipole_fringe_tpsa(r::SVector{6,CTPS{T}},
+                                        polynom_a::SVector{N,T},
+                                        polynom_b::SVector{N,T},
+                                        max_order::Int, edge::T,
+                                        skip_b0::Int, beti::T) where {T,N}
+    FX = CTPS(zero(T)); FY = CTPS(zero(T))
+    FX_X = CTPS(zero(T)); FX_Y = CTPS(zero(T))
+    FY_X = CTPS(zero(T)); FY_Y = CTPS(zero(T))
+    RX = CTPS(one(T)); IX = CTPS(zero(T))
+
+    @inbounds for n in 0:max_order
+        B = polynom_b[n + 1]
+        A = polynom_a[n + 1]
+        j = T(n + 1)
+        DRX = RX
+        DIX = IX
+        RX = DRX * r[1] - DIX * r[3]
+        IX = DRX * r[3] + DIX * r[1]
+
+        U = CTPS(zero(T)); V = CTPS(zero(T))
+        DU = CTPS(zero(T)); DV = CTPS(zero(T))
+        if n == 0 && skip_b0 != 0
+            U -= A * IX
+            V += A * RX
+            DU -= A * DIX
+            DV += A * DRX
+        else
+            U += B * RX - A * IX
+            V += B * IX + A * RX
+            DU += B * DRX - A * DIX
+            DV += B * DIX + A * DRX
+        end
+
+        f1 = -edge / (T(4) * (j + one(T)))
+        U *= f1
+        V *= f1
+        DU *= f1
+        DV *= f1
+
+        DUX = j * DU
+        DVX = j * DV
+        DUY = -j * DV
+        DVY = j * DU
+        nf = (j + T(2)) / j
+
+        FX += U * r[1] + nf * V * r[3]
+        FY += U * r[3] - nf * V * r[1]
+        FX_X += DUX * r[1] + U + nf * r[3] * DVX
+        FX_Y += DUY * r[1] + nf * V + nf * r[3] * DVY
+        FY_X += DUX * r[3] - nf * V - nf * r[1] * DVX
+        FY_Y += DUY * r[3] + U - nf * r[1] * DVY
+    end
+
+    DEL = one(T) / (beti + r[6])
+    MA = one(T) - FX_X * DEL
+    MB = -FY_X * DEL
+    MD = one(T) - FY_Y * DEL
+    MC = -FX_Y * DEL
+    den = MA * MD - MB * MC
+
+    x_new = r[1] - FX * DEL
+    y_new = r[3] - FY * DEL
+    px_new = (MD * r[2] - MB * r[4]) / den
+    py_new = (MA * r[4] - MC * r[2]) / den
+    z_new = r[5] + (px_new * FX + py_new * FY) * DEL * DEL
+    return SVector{6,CTPS{T}}(x_new, px_new, y_new, py_new, z_new, r[6])
+end
+
 # ── Symplectic integrators ──
 
 @inline function symplectic4_pass_tpsa(r::SVector{6,CTPS{T}}, L::T,
@@ -249,8 +317,16 @@ function TrackPad.pass!(elem::Quadrupole{T,N}, r::SVector{6,CTPS{T}}, beti::T) w
         kick_correction_a = elem.polynom_a
     end
 
+    if !iszero(elem.fringe_entrance)
+        r = multipole_fringe_tpsa(r, kick_correction_a, kick_correction_b,
+                                  elem.max_order, one(T), 1, beti)
+    end
     r = symplectic4_pass_tpsa(r, elem.L, kick_correction_a, kick_correction_b,
                                elem.max_order, elem.num_int_steps, beti)
+    if !iszero(elem.fringe_exit)
+        r = multipole_fringe_tpsa(r, kick_correction_a, kick_correction_b,
+                                  elem.max_order, -one(T), 1, beti)
+    end
     r = exit_misalignment(r, elem.t2, elem.r2)
     return r
 end
@@ -261,8 +337,25 @@ function TrackPad.pass!(elem::Sextupole{T,N}, r::SVector{6,CTPS{T}}, beti::T) wh
     r = enter_misalignment(r, elem.t1, elem.r1)
 
     polynom_b = SVector{4,T}(elem.polynom_b[1], elem.polynom_b[2], elem.k2/2, elem.polynom_b[4])
-    r = symplectic4_pass_tpsa(r, elem.L, elem.polynom_a, polynom_b,
+    polynom_a = elem.polynom_a
+    if elem.L > zero(T)
+        polynom_b = SVector{4,T}(
+            polynom_b[1] - sin(elem.kick_angle[1]) / elem.L,
+            polynom_b[2], polynom_b[3], polynom_b[4])
+        polynom_a = SVector{4,T}(
+            polynom_a[1] + sin(elem.kick_angle[2]) / elem.L,
+            polynom_a[2], polynom_a[3], polynom_a[4])
+    end
+    if !iszero(elem.fringe_entrance)
+        r = multipole_fringe_tpsa(r, polynom_a, polynom_b,
+                                  elem.max_order, one(T), 1, beti)
+    end
+    r = symplectic4_pass_tpsa(r, elem.L, polynom_a, polynom_b,
                                elem.max_order, elem.num_int_steps, beti)
+    if !iszero(elem.fringe_exit)
+        r = multipole_fringe_tpsa(r, polynom_a, polynom_b,
+                                  elem.max_order, -one(T), 1, beti)
+    end
 
     r = exit_misalignment(r, elem.t2, elem.r2)
     return r
@@ -274,8 +367,25 @@ function TrackPad.pass!(elem::Octupole{T,N}, r::SVector{6,CTPS{T}}, beti::T) whe
     r = enter_misalignment(r, elem.t1, elem.r1)
 
     polynom_b = SVector{4,T}(elem.polynom_b[1], elem.polynom_b[2], elem.polynom_b[3], elem.k3/6)
-    r = symplectic4_pass_tpsa(r, elem.L, elem.polynom_a, polynom_b,
+    polynom_a = elem.polynom_a
+    if elem.L > zero(T)
+        polynom_b = SVector{4,T}(
+            polynom_b[1] - sin(elem.kick_angle[1]) / elem.L,
+            polynom_b[2], polynom_b[3], polynom_b[4])
+        polynom_a = SVector{4,T}(
+            polynom_a[1] + sin(elem.kick_angle[2]) / elem.L,
+            polynom_a[2], polynom_a[3], polynom_a[4])
+    end
+    if !iszero(elem.fringe_entrance)
+        r = multipole_fringe_tpsa(r, polynom_a, polynom_b,
+                                  elem.max_order, one(T), 1, beti)
+    end
+    r = symplectic4_pass_tpsa(r, elem.L, polynom_a, polynom_b,
                                elem.max_order, elem.num_int_steps, beti)
+    if !iszero(elem.fringe_exit)
+        r = multipole_fringe_tpsa(r, polynom_a, polynom_b,
+                                  elem.max_order, -one(T), 1, beti)
+    end
 
     r = exit_misalignment(r, elem.t2, elem.r2)
     return r
@@ -311,10 +421,18 @@ function TrackPad.pass!(elem::SBend{T,N}, r::SVector{6,CTPS{T}}, beti::T) where 
         r = edge_fringe_entrance_tpsa(r, irho, elem.e1, elem.fint1, elem.gap,
                                        elem.fringe_bend_entrance)
     end
+    if !iszero(elem.fringe_quad_entrance)
+        r = multipole_fringe_tpsa(r, polynom_a, polynom_b,
+                                  elem.max_order, one(T), 1, beti)
+    end
 
     r = symplectic4_bend_pass_tpsa(r, elem.L, polynom_a, polynom_b, irho,
                                     elem.max_order, elem.num_int_steps, beti)
 
+    if !iszero(elem.fringe_quad_exit)
+        r = multipole_fringe_tpsa(r, polynom_a, polynom_b,
+                                  elem.max_order, -one(T), 1, beti)
+    end
     if elem.fringe_bend_exit != 0
         r = edge_fringe_exit_tpsa(r, irho, elem.e2, elem.fint2, elem.gap,
                                    elem.fringe_bend_exit)
@@ -490,12 +608,9 @@ end
 # ── Translation ──
 
 function TrackPad.pass!(elem::Translation{T,N}, r::SVector{6,CTPS{T}}, beti::T) where {T,N}
-    pz2 = CTPS(one(T)) + 2*r[6]*beti + r[6]^2 - r[2]^2 - r[4]^2
-    pz = sqrt(pz2)
-    x_new = r[1] - (elem.dx + elem.ds * r[2] / pz)
-    y_new = r[3] - (elem.dy + elem.ds * r[4] / pz)
-    z_new = r[5] + elem.ds * (beti + r[6]) / pz
-    return SVector{6,CTPS{T}}(x_new, r[2], y_new, r[4], z_new, r[6])
+    r = drift6_tpsa(r, elem.ds, beti)
+    return SVector{6,CTPS{T}}(r[1] - elem.dx, r[2], r[3] - elem.dy,
+                              r[4], r[5], r[6])
 end
 
 # ── YRotation ──

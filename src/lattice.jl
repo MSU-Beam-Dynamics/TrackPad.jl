@@ -290,24 +290,26 @@ function linepass!(coords::Matrix{T}, lat::Lattice, beam::Beam{T},
             _apply_longitudinal_wake!(coords, lost_flags, nparticles, elem_now)
             continue
         end
+        rap, eap = _elem_apertures(elem_now)
+        check_aperture = _apertures_active(rap, eap)
         for i in 1:nparticles
             if lost_flags[i] == 1
                 continue
             end
-            
+
             # Extract particle coordinates as SVector
             r = SVector{6,T}(coords[i, 1], coords[i, 2], coords[i, 3],
                              coords[i, 4], coords[i, 5], coords[i, 6])
-            
+
             # Track through element
             r_new = pass!(elem_now, r, β_inv)
-            
+
             # Check if lost
             if check_lost(r_new)
                 lost_flags[i] = 1
                 continue
             end
-            
+
             # Store back
             coords[i, 1] = r_new[1]
             coords[i, 2] = r_new[2]
@@ -315,6 +317,9 @@ function linepass!(coords::Matrix{T}, lat::Lattice, beam::Beam{T},
             coords[i, 4] = r_new[4]
             coords[i, 5] = r_new[5]
             coords[i, 6] = r_new[6]
+
+            # Aperture loss keeps the evolved coordinates (JuTrack semantics).
+            check_aperture && outside_aperture(r_new, rap, eap) && (lost_flags[i] = 1)
         end
     end
     

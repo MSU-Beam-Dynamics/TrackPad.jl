@@ -93,6 +93,120 @@ end
         _assert_parity("VKicker", VKicker(L = 0.0, ykick = -1.5e-4), JuTrack.VKICKER(len = 0.0, ykick = -1.5e-4))
         _assert_parity("YRotation", YRotation(0.0; angle = 0.02), JuTrack.YROTATION(len = 0.0, angle = 0.02))
         _assert_parity("Wiggler", Wiggler(1.2; lw = 0.2, Bmax = 0.8, Nsteps = 8), JuTrack.WIGGLER(len = 1.2, lw = 0.2, Bmax = 0.8, Nsteps = 8))
+        # Vertical wiggler harmonics need kx != 0 (the field decays along x);
+        # degenerate all-zero wave-vector blocks produce NaN in both codes.
+        _assert_parity(
+            "Wiggler vertical harmonics",
+            Wiggler(1.2; lw = 0.2, Bmax = 0.8, Nsteps = 8, By = Int[], Bx = [1, 1, 1, 0, 1, 0]),
+            JuTrack.WIGGLER(len = 1.2, lw = 0.2, Bmax = 0.8, Nsteps = 8, By = Int[], Bx = [1, 1, 1, 0, 1, 0]),
+        )
+        _assert_parity(
+            "Wiggler mixed harmonics",
+            Wiggler(1.2; lw = 0.2, Bmax = 0.8, Nsteps = 8, By = [1, 1, 0, 1, 1, 0], Bx = [1, 2, 1, 0, 1, 0]),
+            JuTrack.WIGGLER(len = 1.2, lw = 0.2, Bmax = 0.8, Nsteps = 8, By = [1, 1, 0, 1, 1, 0], Bx = [1, 2, 1, 0, 1, 0]),
+        )
+
+        # Translation longitudinal shift follows TrackPad's negated z axis and
+        # is drift-consistent; with dx = dy = 0 it must equal a Drift of ds
+        # exactly. JuTrack's TRANSLATION mixes an opposing x-sign with its
+        # c(t-t0) update and is not drift-consistent, so only the in-package
+        # invariant is asserted here (see conventions.md).
+        @testset "Translation drift consistency" begin
+            ds = 3.0e-3
+            beam_tb = Beam(ENERGY_VAL)
+            coords_t = copy(particles_initial)
+            lost_t = zeros(Int, size(coords_t, 1))
+            linepass!(coords_t, Lattice([Translation(0.0; dx = 1.0e-3, dy = -2.0e-3, ds = ds)]),
+                      beam_tb, lost_t)
+            coords_d = copy(particles_initial)
+            linepass!(coords_d, Lattice([Drift(ds)]), Beam(ENERGY_VAL), zeros(Int, size(coords_d, 1)))
+            # Remove the lateral origin offsets analytically: x -= dx, y -= dy.
+            shifted = copy(coords_d)
+            shifted[:, 1] .-= 1.0e-3
+            shifted[:, 3] .-= -2.0e-3
+            @test coords_t ≈ shifted atol = 1.0e-15
+        end
+
+        # Bend multipoles must raise the kick expansion order automatically
+        # (JuTrack raises MaxOrder from nonzero PolynomB entries).
+        @test SBend(0.9, 0.15; polynom_b = [0.0, 0.3, 0.0, 0.0]).max_order == 1
+        @test SBend(0.9, 0.15; polynom_b = [0.0, 0.3, 0.05, 0.0]).max_order == 2
+        @test SBend(0.9, 0.15; polynom_b = [0.0, 0.3, 0.0, 0.7]).max_order == 3
+        @test SBend(0.9, 0.15; max_order = 2).max_order == 2  # user value kept
+        @test ExactSBend(0.9, 0.15; polynom_b = [0.0, 0.0, 0.0, 0.7]).max_order == 3
+        @test SBendSC(1.0, 0.2; polynom_b = [0.0, 0.3, 0.0, 0.0]).max_order == 1
+        _assert_parity(
+            "SBend gradient auto-order",
+            SBend(0.9, 0.15, 0.03, 0.02; num_int_steps = 10,
+                  polynom_b = [0.0, 0.3, 0.0, 0.0]),
+            JuTrack.SBEND(len = 0.9, angle = 0.15, e1 = 0.03, e2 = 0.02,
+                          NumIntSteps = 10, PolynomB = [0.0, 0.3, 0.0, 0.0]),
+        )
+        _assert_parity(
+            "RBend gradient auto-order",
+            RBend(0.9, 0.15; num_int_steps = 10, polynom_b = [0.0, 0.25, 0.0, 0.0]),
+            JuTrack.RBEND(len = 0.9, angle = 0.15, NumIntSteps = 10,
+                          PolynomB = [0.0, 0.25, 0.0, 0.0]),
+        )
+
+        # Forest (13.29) multipole entrance/exit fringes.
+        _assert_parity(
+            "Quadrupole fringes",
+            Quadrupole(0.4, 1.3; num_int_steps = 10, fringe_entrance = 1, fringe_exit = 1),
+            JuTrack.KQUAD(len = 0.4, k1 = 1.3, NumIntSteps = 10,
+                          FringeQuadEntrance = 1, FringeQuadExit = 1),
+        )
+        _assert_parity(
+            "Sextupole fringes",
+            Sextupole(0.4, 2.0; num_int_steps = 10, fringe_entrance = 1),
+            JuTrack.KSEXT(len = 0.4, k2 = 2.0, NumIntSteps = 10, FringeQuadEntrance = 1),
+        )
+        _assert_parity(
+            "Octupole fringes",
+            Octupole(0.4, -3.0; num_int_steps = 10, fringe_exit = 1),
+            JuTrack.KOCT(len = 0.4, k3 = -3.0, NumIntSteps = 10, FringeQuadExit = 1),
+        )
+        _assert_parity(
+            "ThinMultipole fringes",
+            ThinMultipole(0.0, [0.0, 0.0, 0.0, 0.0], [0.0, 0.2, -0.1, 0.05];
+                          max_order = 3, fringe_entrance = 1),
+            JuTrack.thinMULTIPOLE(len = 0.0, PolynomA = [0.0, 0.0, 0.0, 0.0],
+                                  PolynomB = [0.0, 0.2, -0.1, 0.05], MaxOrder = 3,
+                                  FringeQuadEntrance = 1),
+        )
+        _assert_parity(
+            "SBend quad-fringe gates",
+            SBend(0.9, 0.15, 0.03, 0.02; num_int_steps = 10,
+                  fringe_quad_entrance = 1, fringe_quad_exit = 1),
+            JuTrack.SBEND(len = 0.9, angle = 0.15, e1 = 0.03, e2 = 0.02,
+                          NumIntSteps = 10, FringeQuadEntrance = 1, FringeQuadExit = 1),
+        )
+        _assert_parity(
+            "ExactSBend quad-fringe ordering",
+            ExactSBend(0.9, 0.15, 0.03, 0.02; num_int_steps = 10,
+                       fringe_quad_entrance = 1, fringe_quad_exit = 1),
+            JuTrack.ESBEND(len = 0.9, angle = 0.15, e1 = 0.03, e2 = 0.02,
+                           NumIntSteps = 10, FringeQuadEntrance = 1,
+                           FringeQuadExit = 1),
+        )
+        _assert_parity(
+            "Sextupole kick angle with fringes",
+            Sextupole(0.4, 2.0; num_int_steps = 10,
+                      kick_angle = [1.2e-4, -0.8e-4],
+                      fringe_entrance = 1, fringe_exit = 1),
+            JuTrack.KSEXT(len = 0.4, k2 = 2.0, NumIntSteps = 10,
+                          KickAngle = [1.2e-4, -0.8e-4],
+                          FringeQuadEntrance = 1, FringeQuadExit = 1),
+        )
+        _assert_parity(
+            "Octupole kick angle with fringes",
+            Octupole(0.4, -3.0; num_int_steps = 10,
+                     kick_angle = [-0.7e-4, 1.1e-4],
+                     fringe_entrance = 1, fringe_exit = 1),
+            JuTrack.KOCT(len = 0.4, k3 = -3.0, NumIntSteps = 10,
+                         KickAngle = [-0.7e-4, 1.1e-4],
+                         FringeQuadEntrance = 1, FringeQuadExit = 1),
+        )
 
         # Space-charge canonical family.
         _assert_parity("DriftSC", DriftSC(0.5; a = 0.01, b = 0.02, Nl = 12, Nm = 14, Nsteps = 2), JuTrack.DRIFT_SC(len = 0.5, a = 0.01, b = 0.02, Nl = 12, Nm = 14, Nsteps = 2))
@@ -127,6 +241,22 @@ end
     finally
         JuTrack.use_exact_beti = old_exact_beti
     end
+end
+
+@testset "Wiggler constructor validation" begin
+    @test_throws ArgumentError Wiggler(1.2)
+    @test_throws ArgumentError Wiggler(1.2; lw = 0.2, Nsteps = 0)
+    @test_throws ArgumentError Wiggler(1.2; lw = 0.2, energy = M_ELECTRON)
+    @test_throws ArgumentError Wiggler(1.2; lw = 0.2, By = [1, 1, 0])
+    @test_throws ArgumentError Wiggler(1.2; lw = 0.2, Bx = [1, 1, 1])
+    @test_throws ArgumentError Wiggler(
+        1.2; lw = 0.2, Bx = [1, 1, 0, 0, 1, 0])
+    @test_throws ArgumentError Wiggler(
+        1.2; lw = 0.2, Bx = [1, 1, 1, 0, 0, 0])
+    @test_throws ArgumentError Wiggler(
+        1.2; lw = 0.2, By = [1, 1, 0, 0, 1, 0])
+    @test_throws ArgumentError Wiggler(
+        1.2; lw = 0.2, By = [1, 1, 0, 1, 0, 0])
 end
 
 @testset "Canonical longitudinal slip map" begin
@@ -415,6 +545,51 @@ end
         lat = Lattice(AbstractElement[Drift(0.1), wake])
         @test_throws ArgumentError linepass(lat, SVector(0.0, 0.0, 0.0, 0.0, 1.0e-3, 0.0), beam)
     end
+end
+
+@testset "Aperture loss parity" begin
+    # Two macroparticles sit outside the apertures; both codes must flag
+    # exactly those and keep identical evolved coordinates.
+    wide = vcat(particles_initial,
+                [2.0e-3 0.0 0.0 0.0 1.0e-3 0.0
+                 0.0 0.0 2.0e-3 0.0 1.0e-3 0.0])
+    rap = [-5.0e-4, 5.0e-4, -5.0e-4, 5.0e-4, 0.0, 0.0]
+    eap = [1.0e-3, 8.0e-4, 0.0, 0.0, 0.0, 0.0]
+
+    function run_aperture_pair(elem_tp, elem_jt)
+        tpb = Beam(ENERGY_VAL)
+        jtb = JuTrack.Beam(flip_longitudinal_coordinate(wide),
+                           energy = ENERGY_VAL, mass = JuTrack.m_e)
+        c = copy(wide)
+        lf = zeros(Int, size(c, 1))
+        linepass!(c, Lattice([elem_tp]), tpb, lf)
+        JuTrack.linepass!([elem_jt], jtb)
+        return c, lf, flip_longitudinal_coordinate(jtb.r), jtb.lost_flag
+    end
+
+    cases = [
+        ("Drift rectangular",
+         Drift(0.7; r_apertures = rap),
+         JuTrack.DRIFT(len = 0.7, RApertures = collect(rap))),
+        ("Drift elliptical",
+         Drift(0.7; e_apertures = eap),
+         JuTrack.DRIFT(len = 0.7, EApertures = collect(eap))),
+        ("SBend rectangular",
+         SBend(0.9, 0.15; num_int_steps = 10, r_apertures = rap),
+         JuTrack.SBEND(len = 0.9, angle = 0.15, NumIntSteps = 10,
+                       RApertures = collect(rap))),
+    ]
+    @testset "$name" for (name, etp, ejt) in cases
+        c, lf, jr, jlf = run_aperture_pair(etp, ejt)
+        @test lf == jlf
+        @test sum(lf) == 2  # exactly the two out-of-aperture macroparticles
+        @test c ≈ jr atol = PARITY_ATOL
+    end
+
+    # Without apertures nobody is lost.
+    c, lf, jr, jlf = run_aperture_pair(Drift(0.7), JuTrack.DRIFT(len = 0.7))
+    @test lf == zeros(Int, length(lf))
+    @test jlf == zeros(Int, length(jlf))
 end
 
 @testset "Element Gaps" begin

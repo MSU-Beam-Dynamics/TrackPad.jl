@@ -207,6 +207,27 @@ TPSA maps, and GPU tracking reject them. Choose `nbins` so that each bin is
 populated by many macroparticles; sparsely populated edge bins have their
 kick smoothed at the bin scale.
 
+## Translation, Apertures, and Bend Multipoles
+
+`Translation(0; dx=dx, dy=dy, ds=ds)` is a rigid frame displacement: the lateral offsets
+redefine the origin and the longitudinal `ds` acts exactly like a `Drift(ds)`
+slice, keeping a synchronous particle's ``z`` unchanged. This intentionally
+diverges from JuTrack's uncompensated longitudinal term.
+
+Elements carrying `r_apertures` / `e_apertures` enforce them during
+multi-particle tracking: macroparticles outside the rectangular or
+elliptical boundary are flagged as lost at that element (coordinates are
+kept). GPU encoding still rejects nonzero aperture settings.
+
+The bends raise their multipole kick order automatically when higher
+multipoles appear in `polynom_b`, and `Quadrupole`, `Sextupole`, `Octupole`,
+and the bends apply the Forest (13.29) entrance/exit fringe correction when
+their fringe flags are set. `ThinMultipole` fringe flags are accepted but
+inert, mirroring JuTrack. Wiggler harmonics use complete six-value blocks;
+vertical-field (`Bx`) blocks require nonzero ``k_x`` and ``k_z``, while
+horizontal-field (`By`) blocks require nonzero ``k_y`` and ``k_z``. Invalid
+blocks are rejected during construction rather than allowed to produce NaNs.
+
 ```@docs
 LongitudinalRLCWake
 LongitudinalWake

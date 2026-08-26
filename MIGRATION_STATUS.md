@@ -47,6 +47,22 @@
   nmacro)` provides the physically normalized kick scale for TrackPad's
   `delta_E` convention.
 
+- A 2026-08 audit against JuTrack corrected five divergences: the
+  `Translation` longitudinal shift is now drift-consistent (intentionally
+  diverging from JuTrack's uncompensated term), rectangular/elliptical
+  apertures are enforced in multi-particle CPU tracking, bend constructors
+  auto-raise the multipole kick order from nonzero `polynom_b` entries, the
+  Forest (13.29) entrance/exit fringe correction is applied by thick
+  multipoles and bends in scalar and PolySeries tracking, and vertical wiggler
+  harmonics were verified bit-exact against JuTrack on physical configurations;
+  malformed blocks and zero denominator wave vectors are rejected. Known remaining
+  JuTrack-only capabilities: beam-current-driven `SPACECHARGE` (TrackPad's
+  single-particle `SpaceCharge` stays a no-op), radiation (`rad_on!`,
+  `ElementRadiation/WigglerRadiation/ElossRadiation`), matrix-formalism
+  `QUAD`, `CRABCAVITY_K2`, `easyCRABCAVITY`, `Beam_Gauss`, `dynamic_aperture`,
+  RDTs, and reference-point tracking overloads. The LorentzBoost pair remains
+  a documented symplectic divergence (see conventions.md).
+
 ## Phase Status
 
 | Phase | Status | Notes |

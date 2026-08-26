@@ -234,6 +234,32 @@ sparsely populated edge bins at the bin scale, so choose `nbins` such that
 many macroparticles populate each bin. Stored single-pass results differ at
 the order of the old bin width. No input conversion is required.
 
+Several element behaviors were corrected against JuTrack and are breaking
+for previously stored single-pass results:
+
+- `Translation` now applies its longitudinal `ds` shift with TrackPad's
+  drift-consistent update (a synchronous particle keeps its ``z``). Earlier
+  versions copied JuTrack's uncompensated ``\pm ds\,(\beta_0^{-1}+\delta)``
+  term, which mixed axis conventions. With ``dx = dy = 0``,
+  `Translation(0; ds=ds)` equals `Drift(ds)`. This intentionally diverges
+  from JuTrack's map. Scalar and PolySeries tracking use the same convention.
+- Rectangular (`r_apertures`) and elliptical (`e_apertures`) apertures are
+  now enforced in multi-particle CPU tracking: macroparticles outside an
+  aperture are flagged as lost at that element while keeping their evolved
+  coordinates. Earlier versions stored the fields but never applied them.
+- `SBend`, `RBend`, `ExactSBend`, `ERBend`, and `SBendSC` raise their kick
+  expansion order automatically when higher multipoles are present in
+  `polynom_b` (JuTrack behavior); earlier versions required a manual
+  `max_order` and silently dropped gradients otherwise.
+- The Forest (13.29) multipole entrance/exit fringe correction is applied by
+  `Quadrupole`, `Sextupole`, `Octupole`, and the bends when their fringe
+  flags are nonzero. `ThinMultipole` fringe flags stay inert on both sides
+  of the migration (JuTrack's Float64 thin-multipole pass ignores them too).
+- Wiggler harmonics must contain complete six-value blocks and nonzero
+  denominator wave-vector entries: ``k_x,k_z\neq0`` for vertical-field `Bx`
+  blocks and ``k_y,k_z\neq0`` for horizontal-field `By` blocks. Invalid
+  configurations are rejected during construction.
+
 ## Reference Beam
 
 `Beam(energy; mass, charge)` uses the following quantities:

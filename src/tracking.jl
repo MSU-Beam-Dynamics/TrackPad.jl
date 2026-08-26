@@ -423,6 +423,83 @@ Drift-Kick-Drift-Kick-Drift-Kick-Drift pattern per step.
     return r
 end
 
+"""
+    multipole_fringe(r, polynom_a, polynom_b, max_order, edge, skip_b0, beti) -> SVector{6}
+
+Forest (13.29) entrance/exit fringe correction for thick multipoles, ported
+from JuTrack's `multipole_fringe!`. `edge = ±1` selects entrance/exit and
+`skip_b0 != 0` omits the dipole term (bends treat it separately). The
+longitudinal update carries the opposite sign of JuTrack's because TrackPad's
+`z` axis is negated; transverse dynamics are identical.
+"""
+@inline function multipole_fringe(r::SVector{6,S},
+                                  polynom_a::SVector{4,T},
+                                  polynom_b::SVector{4,T},
+                                  max_order::Int,
+                                  edge::T,
+                                  skip_b0::Int,
+                                  beti::T) where {T<:Real,S}
+    FX = zero(T); FY = zero(T)
+    FX_X = zero(T); FX_Y = zero(T); FY_X = zero(T); FY_Y = zero(T)
+    RX = one(T); IX = zero(T)
+    @inbounds for n in 0:max_order
+        B = polynom_b[n + 1]
+        A = polynom_a[n + 1]
+        j = n + 1.0
+        DRX = RX
+        DIX = IX
+        RX = DRX * r[1] - DIX * r[3]
+        IX = DRX * r[3] + DIX * r[1]
+
+        U = zero(T); V = zero(T); DU = zero(T); DV = zero(T)
+        if n == 0 && skip_b0 != 0
+            U -= A * IX
+            V += A * RX
+            DU -= A * DIX
+            DV += A * DRX
+        else
+            U += B * RX - A * IX
+            V += B * IX + A * RX
+            DU += B * DRX - A * DIX
+            DV += B * DIX + A * DRX
+        end
+
+        f1 = -edge / 4.0 / (j + 1.0)
+        U *= f1
+        V *= f1
+        DU *= f1
+        DV *= f1
+
+        DUX = j * DU
+        DVX = j * DV
+        DUY = -j * DV
+        DVY = j * DU
+
+        nf = (j + 2.0) / j
+
+        FX += U * r[1] + nf * V * r[3]
+        FY += U * r[3] - nf * V * r[1]
+
+        FX_X += DUX * r[1] + U + nf * r[3] * DVX
+        FX_Y += DUY * r[1] + nf * V + nf * r[3] * DVY
+        FY_X += DUX * r[3] - nf * V - nf * r[1] * DVX
+        FY_Y += DUY * r[3] + U - nf * r[1] * DVY
+    end
+
+    DEL = one(T) / (beti + r[6])
+    MA = one(T) - FX_X * DEL
+    MB = -FY_X * DEL
+    MD = one(T) - FY_Y * DEL
+    MC = -FX_Y * DEL
+
+    x_new = r[1] - FX * DEL
+    y_new = r[3] - FY * DEL
+    pxf = (MD * r[2] - MB * r[4]) / (MA * MD - MB * MC)
+    pyf = (MA * r[4] - MC * r[2]) / (MA * MD - MB * MC)
+    z_new = r[5] + (pxf * FX + pyf * FY) * DEL * DEL
+    return SVector(x_new, pxf, y_new, pyf, z_new, r[6])
+end
+
 # =============================================================================
 # Quadrupole Tracking
 # =============================================================================
@@ -461,17 +538,28 @@ function pass!(elem::Quadrupole{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,
         kick_correction_b = polynom_b
         kick_correction_a = elem.polynom_a
     end
-    
+
+    # Forest (13.29) entrance/exit fringe when enabled
+    if !iszero(elem.fringe_entrance)
+        r = multipole_fringe(r, kick_correction_a, kick_correction_b,
+                             elem.max_order, one(T), 1, beti)
+    end
+
     # Symplectic integration
-    r = symplectic4_pass(r, elem.L, kick_correction_a, kick_correction_b, 
+    r = symplectic4_pass(r, elem.L, kick_correction_a, kick_correction_b,
                          elem.max_order, elem.num_int_steps, beti)
-    
+
+    if !iszero(elem.fringe_exit)
+        r = multipole_fringe(r, kick_correction_a, kick_correction_b,
+                             elem.max_order, -one(T), 1, beti)
+    end
+
     # Apply exit misalignment
     if !iszero(elem.r2)
         r = elem.r2 * r
     end
     r = apply_misalignment(r, elem.t2)
-    
+
     return r
 end
 
@@ -493,10 +581,27 @@ function pass!(elem::Sextupole{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N
     
     # k2 goes to polynom_b[3] (with factor 1/2 for standard normalization)
     polynom_b = SVector{4,T}(elem.polynom_b[1], elem.polynom_b[2], elem.k2/2, elem.polynom_b[4])
-    
+    polynom_a = elem.polynom_a
+    if elem.L > zero(T)
+        polynom_b = SVector{4,T}(
+            polynom_b[1] - sin(elem.kick_angle[1]) / elem.L,
+            polynom_b[2], polynom_b[3], polynom_b[4])
+        polynom_a = SVector{4,T}(
+            polynom_a[1] + sin(elem.kick_angle[2]) / elem.L,
+            polynom_a[2], polynom_a[3], polynom_a[4])
+    end
+
+    if !iszero(elem.fringe_entrance)
+        r = multipole_fringe(r, polynom_a, polynom_b, elem.max_order, one(T), 1, beti)
+    end
+
     # Symplectic integration
-    r = symplectic4_pass(r, elem.L, elem.polynom_a, polynom_b, 
+    r = symplectic4_pass(r, elem.L, polynom_a, polynom_b,
                          elem.max_order, elem.num_int_steps, beti)
+
+    if !iszero(elem.fringe_exit)
+        r = multipole_fringe(r, polynom_a, polynom_b, elem.max_order, -one(T), 1, beti)
+    end
     
     # Apply exit misalignment
     if !iszero(elem.r2)
@@ -525,10 +630,27 @@ function pass!(elem::Octupole{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,
     
     # k3 goes to polynom_b[4] (with factor 1/6 for standard normalization)
     polynom_b = SVector{4,T}(elem.polynom_b[1], elem.polynom_b[2], elem.polynom_b[3], elem.k3/6)
-    
+    polynom_a = elem.polynom_a
+    if elem.L > zero(T)
+        polynom_b = SVector{4,T}(
+            polynom_b[1] - sin(elem.kick_angle[1]) / elem.L,
+            polynom_b[2], polynom_b[3], polynom_b[4])
+        polynom_a = SVector{4,T}(
+            polynom_a[1] + sin(elem.kick_angle[2]) / elem.L,
+            polynom_a[2], polynom_a[3], polynom_a[4])
+    end
+
+    if !iszero(elem.fringe_entrance)
+        r = multipole_fringe(r, polynom_a, polynom_b, elem.max_order, one(T), 1, beti)
+    end
+
     # Symplectic integration
-    r = symplectic4_pass(r, elem.L, elem.polynom_a, polynom_b, 
+    r = symplectic4_pass(r, elem.L, polynom_a, polynom_b,
                          elem.max_order, elem.num_int_steps, beti)
+
+    if !iszero(elem.fringe_exit)
+        r = multipole_fringe(r, polynom_a, polynom_b, elem.max_order, -one(T), 1, beti)
+    end
     
     # Apply exit misalignment
     if !iszero(elem.r2)
@@ -675,6 +797,8 @@ function pass!(elem::ThinMultipole{T,N}, r::SVector{6,S}, beti::T=one(T)) where 
     end
     
     # JuTrack thinMULTIPOLE uses an integrated-strength kick with unit kick length.
+    # NOTE: JuTrack's Float64 thin-multipole pass applies no fringe field even
+    # though the struct carries FringeQuad flags; TrackPad mirrors that here.
     r = strthinkick(r, elem.polynom_a, elem.polynom_b, one(T), elem.max_order)
     
     # Apply exit misalignment
@@ -740,11 +864,19 @@ function pass!(elem::SBend{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     if elem.fringe_bend_entrance != 0
         r = edge_fringe_entrance(r, irho, elem.e1, elem.fint1, elem.gap, elem.fringe_bend_entrance)
     end
-    
+
+    if !iszero(elem.fringe_quad_entrance)
+        r = multipole_fringe(r, polynom_a, polynom_b, elem.max_order, one(T), 1, beti)
+    end
+
     # Symplectic integration through body
-    r = symplectic4_bend_pass(r, elem.L, polynom_a, polynom_b, irho, 
+    r = symplectic4_bend_pass(r, elem.L, polynom_a, polynom_b, irho,
                                elem.max_order, elem.num_int_steps, beti)
-    
+
+    if !iszero(elem.fringe_quad_exit)
+        r = multipole_fringe(r, polynom_a, polynom_b, elem.max_order, -one(T), 1, beti)
+    end
+
     # Apply exit edge focusing
     if elem.fringe_bend_exit != 0
         r = edge_fringe_exit(r, irho, elem.e2, elem.fint2, elem.gap, elem.fringe_bend_exit)
@@ -969,20 +1101,30 @@ function pass!(elem::ExactSBend{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,
     end
     
     irho = elem.angle / elem.L
-    
-    # Coordinate Rotation (Entrance)
+
+    # Fold KickAngle into the multipoles once; fringes and kicks share them.
+    polynom_b = elem.polynom_b
+    polynom_a = elem.polynom_a
+    if elem.L > zero(T)
+        polynom_b = SVector{4,T}(
+            polynom_b[1] - sin(elem.kick_angle[1]) / elem.L,
+            polynom_b[2], polynom_b[3], polynom_b[4])
+        polynom_a = SVector{4,T}(
+            polynom_a[1] + sin(elem.kick_angle[2]) / elem.L,
+            polynom_a[2], polynom_a[3], polynom_a[4])
+    end
+
+    # JuTrack/Forest ordering: rotation, bend fringe, multipole fringe, edge.
     r = yrot(r, elem.e1, beti)
-    
-    # Entrance Fringe
     if elem.fringe_bend_entrance != 0
         r = bend_fringe(r, irho, elem.gk, beti)
     end
-    
-    # Entrance Edge
+    if !iszero(elem.fringe_quad_entrance)
+        r = multipole_fringe(r, polynom_a, polynom_b, elem.max_order, one(T), 1, beti)
+    end
     r = bend_edge(r, irho, -elem.e1, beti)
-    
-    # Integrator (Body)
-    # Drift-Kick-Drift using exact_bend_body
+
+    # Integrator (Body): drift-kick-drift using exact_bend_body.
     if elem.num_int_steps == 0
         r = exact_bend_body(r, irho, elem.L, beti)
     else
@@ -991,18 +1133,6 @@ function pass!(elem::ExactSBend{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,
         L2 = SL * T(DRIFT2)
         K1 = SL * T(KICK1)
         K2 = SL * T(KICK2)
-        
-        polynom_b = elem.polynom_b
-        polynom_a = elem.polynom_a
-        
-        if elem.L > zero(T)
-             polynom_b = SVector{4,T}(
-                polynom_b[1] - sin(elem.kick_angle[1]) / elem.L,
-                polynom_b[2], polynom_b[3], polynom_b[4])
-             polynom_a = SVector{4,T}(
-                polynom_a[1] + sin(elem.kick_angle[2]) / elem.L,
-                polynom_a[2], polynom_a[3], polynom_a[4])
-        end
 
         for _ in 1:elem.num_int_steps
             r = exact_bend_body(r, irho, L1, beti)
@@ -1014,11 +1144,12 @@ function pass!(elem::ExactSBend{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,
             r = exact_bend_body(r, irho, L1, beti)
         end
     end
-    
-    # Exit Edge
+
+    # JuTrack/Forest exit ordering reverses the entrance composition.
     r = bend_edge(r, irho, -elem.e2, beti)
-    
-    # Exit Fringe
+    if !iszero(elem.fringe_quad_exit)
+        r = multipole_fringe(r, polynom_a, polynom_b, elem.max_order, -one(T), 1, beti)
+    end
     if elem.fringe_bend_exit != 0
         r = bend_fringe(r, -irho, elem.gk, beti)
     end
@@ -1240,6 +1371,41 @@ end
 # Auxiliary Canonical Elements
 # =============================================================================
 
+"""
+    outside_aperture(r, r_apertures, e_apertures) -> Bool
+
+True when the coordinate vector `r` lies outside the element apertures,
+mirroring JuTrack's `check_lost_aperture`. `r_apertures =
+[xmin, xmax, ymin, ymax, 0, 0]` defines a rectangular aperture and
+`e_apertures = [ax, ay, 0, 0, 0, 0]` an elliptical one with semi-axes
+`ax`, `ay`; all-zero vectors disable the respective check.
+"""
+function outside_aperture(r::SVector{6,T}, r_apertures::AbstractVector{T},
+                          e_apertures::AbstractVector{T}) where T
+    if !iszero(r_apertures)
+        (r[1] < r_apertures[1] || r[1] > r_apertures[2] ||
+         r[3] < r_apertures[3] || r[3] > r_apertures[4]) && return true
+    end
+    if !iszero(e_apertures) && e_apertures[1] > zero(T) && e_apertures[2] > zero(T)
+        r[1]^2 / e_apertures[1]^2 + r[3]^2 / e_apertures[2]^2 > one(T) && return true
+    end
+    return false
+end
+
+# Elements either carry aperture fields (magnets, drifts, cavities, ...) or
+# none at all (collective elements, maps); resolve once per element so the
+# hot multi-particle loop stays branch-free.
+@inline function _elem_apertures(elem)
+    hasfield(typeof(elem), :r_apertures) ?
+        (getfield(elem, :r_apertures), getfield(elem, :e_apertures)) :
+        (nothing, nothing)
+end
+
+@inline _apertures_active(rap, eap) =
+    rap !== nothing && !(iszero(rap) && iszero(eap))
+
+
+
 function pass!(elem::SpaceCharge{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     # TrackPad's single-particle API has no bunch moments/current.
     # Keep SPACECHARGE as a no-op here (JuTrack also gives zero kick at I=0).
@@ -1361,14 +1527,21 @@ function pass!(patch::Patch{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
 end
 
 function pass!(elem::Translation{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
+    # A rigid frame displacement by (dx, dy, ds): lateral origin offsets are
+    # pure coordinate redefinitions, while the longitudinal ds acts like a
+    # drift slice of length ds and therefore shares drift6's exact update,
+    # including the reference-path compensation that keeps a synchronous
+    # particle's z fixed. JuTrack's TRANSLATION instead applies
+    # +/- ds*(1/beta + delta)/pz without compensation under its own
+    # c(t-t0) axis; TrackPad deliberately uses the drift-consistent form.
     pz2 = one(T) + 2 * r[6] * beti + r[6]^2 - r[2]^2 - r[4]^2
     if pz2 <= zero(T)
         return _nan6(T)
     end
-    pz = sqrt(pz2)
-    x_new = r[1] - (elem.dx + elem.ds * r[2] / pz)
-    y_new = r[3] - (elem.dy + elem.ds * r[4] / pz)
-    z_new = r[5] + elem.ds * (beti + r[6]) / pz
+    norm_ds = elem.ds / sqrt(pz2)
+    x_new = r[1] - elem.dx + norm_ds * r[2]
+    y_new = r[3] - elem.dy + norm_ds * r[4]
+    z_new = r[5] - (norm_ds * (beti + r[6]) - elem.ds * beti)
     return SVector{6, T}(x_new, r[2], y_new, r[4], z_new, r[6])
 end
 

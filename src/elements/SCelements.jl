@@ -293,9 +293,11 @@ function SBendSC(L, angle, e1 = 0.0, e2 = 0.0;
     T = _promote_element_type(L, angle, e1, e2, fint1, fint2, gap, polynom_a, polynom_b,
                               fringe_int_m0, fringe_int_p0, t1, t2, r1, r2, r_apertures, e_apertures,
                               kick_angle, a, b)
+    pb = SVector{4, T}(_default_vec(polynom_b, T, Val(4)))
+    max_order = _bend_max_order(max_order, pb)
     SBendSC{T, Symbol}(Symbol(name), T(L), T(angle), T(e1), T(e2),
         SVector{4, T}(_default_vec(polynom_a, T, Val(4))),
-        SVector{4, T}(_default_vec(polynom_b, T, Val(4))),
+        pb,
         max_order, num_int_steps, rad,
         T(fint1), T(fint2), T(gap), fringe_bend_entrance, fringe_bend_exit, fringe_quad_entrance, fringe_quad_exit,
         SVector{5, T}(_default_vec(fringe_int_m0, T, Val(5))),

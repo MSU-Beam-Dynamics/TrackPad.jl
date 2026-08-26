@@ -1,7 +1,9 @@
 """
     Wiggler{T, N}
 
-Canonical wiggler element metadata.
+Canonical wiggler element metadata. Harmonics are stored in six-integer
+blocks. Horizontal-field (`Bx`) blocks require nonzero `kx` and `kz` entries;
+vertical-field (`By`) blocks require nonzero `ky` and `kz` entries.
 """
 struct Wiggler{T, N, V<:AbstractVector{Int}} <: AbstractMagnet
     name::N
@@ -31,6 +33,22 @@ function Wiggler(L;
     T = _promote_element_type(L, lw, Bmax, energy, t1, t2, r1, r2)
     byv = Int[By...]
     bxv = Int[Bx...]
+    isfinite(L) && L >= zero(T) || throw(ArgumentError("L must be finite and nonnegative"))
+    isfinite(lw) && lw > zero(T) || throw(ArgumentError("lw must be finite and positive"))
+    isfinite(Bmax) || throw(ArgumentError("Bmax must be finite"))
+    isfinite(energy) && energy > T(M_ELECTRON) ||
+        throw(ArgumentError("energy must be finite and greater than the electron rest-mass energy"))
+    Nsteps > 0 || throw(ArgumentError("Nsteps must be positive"))
+    length(byv) % 6 == 0 || throw(ArgumentError("By must contain complete six-value harmonic blocks"))
+    length(bxv) % 6 == 0 || throw(ArgumentError("Bx must contain complete six-value harmonic blocks"))
+    for base in 0:6:length(byv)-1
+        iszero(byv[base + 4]) && throw(ArgumentError("By harmonic ky entries must be nonzero"))
+        iszero(byv[base + 5]) && throw(ArgumentError("By harmonic kz entries must be nonzero"))
+    end
+    for base in 0:6:length(bxv)-1
+        iszero(bxv[base + 3]) && throw(ArgumentError("Bx harmonic kx entries must be nonzero"))
+        iszero(bxv[base + 5]) && throw(ArgumentError("Bx harmonic kz entries must be nonzero"))
+    end
     nh = length(byv) ÷ 6
     nv = length(bxv) ÷ 6
     Wiggler{T, Symbol, Vector{Int}}(
