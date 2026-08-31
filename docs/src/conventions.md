@@ -110,6 +110,52 @@ This equation fixes both the meaning of `delta` and the sign of `z`.
 JuTrack-compatible ultrarelativistic approximation and changes nonlinear maps
 and chromaticity.
 
+### Beam covariance and emittance
+
+Macroparticle matrices follow the same canonical order as scalar tracking. A
+``6\times6`` covariance matrix therefore uses
+
+```math
+X=(x,p_x,y,p_y,z,\delta_E)^\mathsf{T},
+\qquad
+\Sigma=\left\langle(X-\langle X\rangle)
+(X-\langle X\rangle)^\mathsf{T}\right\rangle.
+```
+
+The transverse geometric emittance of an uncoupled plane is represented by
+
+```math
+\Sigma_x=\epsilon_x
+\begin{pmatrix}
+\beta_x & -\alpha_x\\
+-\alpha_x & (1+\alpha_x^2)/\beta_x
+\end{pmatrix},
+```
+
+with the analogous expression for ``y`` and, when requested, the canonical
+``(z,\delta_E)`` plane. Because ``p_x`` and ``p_y`` are normalized canonical
+momenta, interpreting them as slopes is only a paraxial approximation.
+
+The matched-distribution API defines ordinary and crab dispersion through
+
+```math
+\begin{pmatrix}x\\p_x\\y\\p_y\end{pmatrix}
+=
+\begin{pmatrix}x_\beta\\p_{x,\beta}\\y_\beta\\p_{y,\beta}\end{pmatrix}
++D_c z+D_E\delta_E.
+```
+
+Thus ordinary dispersion is differentiated with respect to TrackPad's energy
+coordinate. If external optics uses
+``\delta_P=(P-P_0)/P_0``, convert its first-order response using
+``D_E=D_P/\beta_0``. Signs of crab response follow TrackPad's positive-early
+``z`` convention.
+
+Projected emittances are ``\sqrt{\det\Sigma_{ii}}`` for the three diagonal
+canonical ``2\times2`` blocks. They are generally not invariants in a coupled,
+dispersive, or crabbed beam. `eigenemittances` instead returns the sorted paired
+singular values of ``\sqrt{\Sigma}J\sqrt{\Sigma}``.
+
 ### Finite-``\beta_0`` coverage
 
 Maps originally expressed in the momentum variable use the exact conversion

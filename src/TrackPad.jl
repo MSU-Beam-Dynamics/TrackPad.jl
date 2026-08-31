@@ -33,6 +33,9 @@ include("lattice.jl")
 # Linear optics utilities
 include("optics.jl")
 
+# Matched macroparticle distributions and moment diagnostics
+include("distributions.jl")
+
 # TPSA map API (implementation in ext/TrackPadPolySeriesExt.jl)
 include("tpsa.jl")
 
@@ -69,6 +72,8 @@ export transfer_map, one_turn_map, findm66, fastfindm66, findm66_refpts, fastfin
 export twissPropagate, periodicEdwardsTengTwiss, twissring
 export gettune, getchrom, periodic_twiss, transport_twiss, twissline
 export find_closed_orbit_4d, find_closed_orbit_6d
+export gaussian_distribution, matched_gaussian, matched_covariance
+export match_moments!, beam_covariance, projected_emittances, eigenemittances
 export check_lost, drift6, strthinkick, symplectic4_pass
 export tpsa_map
 

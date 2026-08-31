@@ -14,6 +14,18 @@ M_ELECTRON
 M_PROTON
 ```
 
+## Beam Distributions
+
+```@docs
+gaussian_distribution
+matched_gaussian
+matched_covariance
+match_moments!
+beam_covariance
+projected_emittances
+eigenemittances
+```
+
 ## Lattice
 
 ```@docs

@@ -15,6 +15,9 @@ the normative [Physics and Data Conventions](@ref conventions).
 | Track one initial condition through a line | `linepass(lat, r0, beam)` | `SVector{6}` |
 | Track one initial condition for turns | `ringpass(lat, r0, beam, nturns)` | `SVector{6}` |
 | Track an `N x 6` CPU matrix with explicit loss flags | `linepass!`, `ringpass!` | mutates matrix and flags |
+| Generate a Gaussian with a target `4 x 4`/`6 x 6` covariance | `gaussian_distribution` | `N x 4`/`N x 6` matrix |
+| Generate from Twiss, emittance, and longitudinal responses | `matched_gaussian` | `N x 6` matrix |
+| Measure covariance or emittances | `beam_covariance`, `projected_emittances`, `eigenemittances` | matrices/vectors |
 | Track a packed batch on CPU/GPU | `batch_linepass!`, `batch_ringpass!` | mutates device/host matrix |
 | Run correlated or Monte Carlo settings | `ParamSweepLattice(...; mode=:aligned)` | one result per trial |
 | Run a systematic parameter grid | `ParamSweepLattice(...; mode=:cartesian)` | Cartesian product |
@@ -61,6 +64,10 @@ When producing analysis code or numerical comparisons, state:
 6. integration steps for thick nonlinear elements; and
 7. whether optics assumes an uncoupled periodic lattice.
 
+For generated distributions, also state whether population (`1/N`) or sample
+(`1/(N-1)`) covariance is used and whether `exact_moments=true` removed random
+finite-sample correlations.
+
 If one is unknown, ask or expose it as a parameter instead of silently choosing
 a convention from another accelerator code.
 
@@ -73,6 +80,8 @@ canonical pair ``(z,\delta_E)`` with
 | Quantity | Shape | Index order |
 |----------|-------|-------------|
 | Particle coordinates | `N x 6` | particle, coordinate |
+| Transverse covariance | `4 x 4` | `(x, px, y, py)` |
+| Full covariance | `6 x 6` | `(x, px, y, py, z, delta_E)` |
 | Batched Jacobian | `N x 6 x 6` | particle, output, input |
 | Batched Hessian-vector product | `N x 6 x 6` | particle, output, input |
 | Batched Hessian | `N x 6 x 6 x 6` | particle, output, input1, input2 |
@@ -81,6 +90,12 @@ canonical pair ``(z,\delta_E)`` with
 
 Preallocate derivative outputs on the same backend and with the same scalar type
 as coordinates and `GPULattice`.
+
+Do not attach generated coordinates to `Beam`; `Beam` is reference-particle
+metadata. `matched_gaussian` returns the ordinary matrix consumed by tracking.
+Ordinary dispersion is with respect to `delta_E`; divide a MAD-X
+momentum-dispersion vector by `beam.beta`. Crab dispersion multiplies TrackPad's
+positive-early `z` coordinate.
 
 ## File and Interchange Workflow
 

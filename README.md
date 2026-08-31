@@ -14,6 +14,7 @@ scalar CPU tracking.
 - TPSA tracking through PolySeries.jl
 - Automatic differentiation through Enzyme.jl
 - GPU backends: Apple Metal (`Float32`) and NVIDIA CUDA (`Float32`/`Float64`), Note: Not all elements are supported on GPU yet, Unsupported GPU element settings are rejected when a `GPULattice` is built.
+- Matched 4D/6D Gaussian macroparticle distributions with exact finite-sample moments
 - File interchange: documented PALS and MAD-X subsets
 
 
@@ -70,6 +71,8 @@ results with another code.
 | Track one particle through a line | `linepass` |
 | Track one particle for many turns | `ringpass` |
 | Track an `N x 6` CPU matrix with loss flags | `linepass!`, `ringpass!` |
+| Generate a matched Gaussian ensemble | `matched_gaussian`, `gaussian_distribution` |
+| Inspect covariance and emittances | `beam_covariance`, `projected_emittances`, `eigenemittances` |
 | Track a packed CPU/GPU batch | `GPULattice`, `batch_linepass!`, `batch_ringpass!` |
 | Scan lattice parameters lazily | `ParamSweepLattice`, `param_sweep_linepass!` |
 | Propagate entrance Twiss through a line | `transport_twiss` |

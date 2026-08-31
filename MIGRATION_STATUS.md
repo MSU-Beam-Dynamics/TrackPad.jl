@@ -1,6 +1,6 @@
 # Migration Status
 
-**Last Updated:** 2026-08-05
+**Last Updated:** 2026-08-27
 
 ## Current Snapshot
 
@@ -59,7 +59,7 @@
   JuTrack-only capabilities: beam-current-driven `SPACECHARGE` (TrackPad's
   single-particle `SpaceCharge` stays a no-op), radiation (`rad_on!`,
   `ElementRadiation/WigglerRadiation/ElossRadiation`), matrix-formalism
-  `QUAD`, `CRABCAVITY_K2`, `easyCRABCAVITY`, `Beam_Gauss`, `dynamic_aperture`,
+  `QUAD`, `CRABCAVITY_K2`, `easyCRABCAVITY`, `dynamic_aperture`,
   RDTs, and reference-point tracking overloads. The LorentzBoost pair remains
   a documented symplectic divergence (see conventions.md).
 
@@ -70,6 +70,7 @@
 | 1. Architecture and Type System | COMPLETE | Parametric element structs, `StaticArrays`, `Adapt`, optional extensions, and category-based source layout are in place. |
 | 2. Core CPU Physics Migration | COMPLETE FOR CURRENT SCOPE | CPU `pass!` implementations and strict JuTrack element parity are in place for the scoped elements. |
 | 2.6 Optics and Orbit APIs | IMPLEMENTED AND VERIFIED | JuTrack-compatible finite-difference separation and exact inverse-velocity conventions are covered by parity tests. |
+| 2.7 Matched Distributions | IMPLEMENTED AND VERIFIED | Standalone 4D/6D Gaussian generation supports exact finite-sample covariance, Twiss/emittance input, ordinary/crab dispersion, and projected/eigen-emittance diagnostics. |
 | 3. TPSA Maps | IMPLEMENTED AS OPTIONAL EXTENSION | `PolySeries` supplies TPSA types; standalone first- and second-order parity tests pass. |
 | 4. Time Dependence | IMPLEMENTED | Time-dependent parameters, element materialization, and verification are present. |
 | 5. Lattice I/O | IMPLEMENTED FOR DOCUMENTED SUBSET | The exported API is reduced to `read_pals`, `read_madx`, and `write_pals`, operating on native `(Lattice, Beam)` values. Full PALS and production MAD-X language expansion require external parsers. |
@@ -114,13 +115,13 @@ Legacy grouped files (`linear.jl`, `multipoles.jl`, `bends.jl`,
 
 ## Verification Status
 
-The latest verification on 2026-08-05 used Julia 1.12.6 through the package
+The latest verification on 2026-08-27 used Julia 1.12.7 through the package
 test target on local Apple hardware.
 No numerical or test-integration failures were observed.
 
 ### Verified Results
 
-- The latest complete `Pkg.test()` invocation reported **637 passed, 0 failed,
+- The latest complete `Pkg.test()` invocation reported **807 passed, 0 failed,
   2 intentional broken tests**.
 - The result includes CPU physics, ExactSBend, optics, closed orbit, time
   dependence, Enzyme compatibility, element parity, TPSA verification, and

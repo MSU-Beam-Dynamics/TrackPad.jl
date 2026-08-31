@@ -137,6 +137,57 @@ ringpass!(coords, fodo, beam, lost_flags, 200)
 println(count(==(0), lost_flags), " / $N particles survived")
 ```
 
+### Matched Gaussian Distributions
+
+TrackPad keeps the reference [`Beam`](@ref TrackPad.Beam) separate from macroparticle
+coordinates. Generate an `N x 6` ensemble and pass it directly to the batch
+tracking APIs:
+
+```julia
+using Random
+
+entrance = optics4DUC(12.0, -1.2, 7.0, 0.4)
+coords = matched_gaussian(
+    MersenneTwister(1234), 10_000, entrance;
+    emitx=20e-9,
+    emity=2e-9,
+    emitz=1e-6,
+    betaz=0.2,
+    dispersion=[0.35, -0.04, 0.0, 0.0],
+    crab_dispersion=[0.02, 0.0, 0.0, 0.0],
+)
+
+sigma = beam_covariance(coords)
+projected_emittances(sigma)
+eigenemittances(sigma)
+```
+
+The response vectors are ordered `(x, px, y, py)`. `dispersion` multiplies
+TrackPad's ``\delta_E`` coordinate, while `crab_dispersion` multiplies ``z``.
+The `eta` and `etap` fields of an [`optics4DUC`](@ref) value supply ordinary
+dispersion when the explicit keyword is omitted. MAD-X momentum dispersion must
+be divided by the reference ``\beta_0`` before use.
+
+For a fully coupled beam, construct the target covariance directly:
+
+```julia
+coords4 = gaussian_distribution(MersenneTwister(1), 1000, sigma4)
+coords6 = gaussian_distribution(MersenneTwister(2), 1000, sigma6;
+                                centroid=closed_orbit)
+```
+
+`sigma4` is in `(x, px, y, py)` and `sigma6` follows TrackPad's full canonical
+order. By default, [`gaussian_distribution`](@ref) and
+[`matched_gaussian`](@ref) whiten finite-sample random correlations and impose
+the requested centroid and covariance to roundoff. Set `exact_moments=false`
+for statistically independent samples. Exact matching requires more particles
+than coordinates and produces a constrained finite ensemble.
+
+[`projected_emittances`](@ref) reports the determinant of each diagonal
+canonical plane. For coupled or dispersive covariance matrices these are not
+the normal-mode invariants; use [`eigenemittances`](@ref) for the sorted
+symplectic eigen-emittances.
+
 ### Element-Level Tracking
 
 The primitive `pass!(elem, r, β_inv)` is the lowest-level interface:

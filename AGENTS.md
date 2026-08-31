@@ -22,9 +22,10 @@ primitive only when the capability belongs to an accelerator tracking library.
 3. `src/tracking.jl` defines scalar element maps and symplectic helpers.
 4. `src/lattice.jl` defines `Beam`, `Lattice`, and line/ring tracking.
 5. `src/optics.jl` defines finite-difference maps, optics, and closed orbit.
-6. `src/tpsa.jl` declares optional TPSA entry points.
-7. `src/io.jl` defines PALS/MAD-X interchange and compilation.
-8. `src/gpu.jl` defines packed KernelAbstractions tracking and sweeps.
+6. `src/distributions.jl` defines matched Gaussian ensembles and moments.
+7. `src/tpsa.jl` declares optional TPSA entry points.
+8. `src/io.jl` defines PALS/MAD-X interchange and compilation.
+9. `src/gpu.jl` defines packed KernelAbstractions tracking and sweeps.
 
 Optional integrations live in `ext/` and must not become hard dependencies:
 
@@ -41,6 +42,9 @@ Optional integrations live in `ext/` and must not become hard dependencies:
 - `delta` is `delta_E = (E - E0)/(P0*c)`, not `(P - P0)/P0`.
 - `Beam.energy` is kinetic energy in eV, not total energy or momentum.
 - `Beam.mass` is rest-mass energy in eV.
+- Macroparticle distributions are `N x 6` matrices, not fields of `Beam`.
+- Distribution covariance uses canonical `(x, px, y, py, z, delta_E)` order;
+  ordinary dispersion is differentiated with respect to `delta_E`.
 - Scalar CPU tracking is the behavioral reference.
 - The default drift uses the exact relativistic Hamiltonian.
 - JuTrack parity is only normative where JuTrack uses the same canonical
