@@ -1,0 +1,11 @@
+[deps]
+Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
+TrackPad = "e7bec244-bd43-46ed-8fec-7dc091d24617"
+
+[sources]
+TrackPad = {path = "../../.."}
+
+[compat]
+Enzyme = "0.13"
+TrackPad = "0.1"
+julia = "1.10"

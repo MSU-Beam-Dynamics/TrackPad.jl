@@ -1,5 +1,7 @@
 [deps]
 CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 TrackPad = "e7bec244-bd43-46ed-8fec-7dc091d24617"
 
 [sources]
@@ -7,5 +9,6 @@ TrackPad = {path = ".."}
 
 [compat]
 CairoMakie = "0.15"
+StaticArrays = "1.9"
 TrackPad = "0.1"
 julia = "1.10"

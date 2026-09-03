@@ -6,7 +6,7 @@ Lattice representation and high-level tracking functions for TrackPad.jl.
 
 using StaticArrays
 
-export Lattice, Beam, isperiodic, linepass!, ringpass!
+export Lattice, Beam, isperiodic, refine_lattice, linepass!, ringpass!
 
 # =============================================================================
 # Beam Definition
@@ -117,9 +117,155 @@ end
 
 Base.length(lat::Lattice) = length(lat.elements)
 Base.getindex(lat::Lattice, i) = lat.elements[i]
+Base.firstindex(lat::Lattice) = firstindex(lat.elements)
+Base.lastindex(lat::Lattice) = lastindex(lat.elements)
 Base.iterate(lat::Lattice) = iterate(lat.elements)
 Base.iterate(lat::Lattice, state) = iterate(lat.elements, state)
 Base.eachindex(lat::Lattice) = eachindex(lat.elements)
+
+@inline function _replace_element_fields(elem::E, changes::NamedTuple) where E
+    values = ntuple(fieldcount(E)) do i
+        field = fieldname(E, i)
+        hasproperty(changes, field) ? getproperty(changes, field) : getfield(elem, i)
+    end
+    return E(values...)
+end
+
+@inline function _slice_kick_angle(kick_angle::SVector{2,T}, count::Int) where T
+    # Tracking uses sin(kick_angle) / L, so preserve that field after L is split.
+    return SVector{2,T}(asin(sin(kick_angle[1]) / count),
+                        asin(sin(kick_angle[2]) / count))
+end
+
+const _SLICED_DRIFT = Union{Drift,DriftSC}
+
+function _slice_drift(elem::_SLICED_DRIFT, count::Int)
+    return [_replace_element_fields(elem, (
+        L = elem.L / count,
+        t1 = i == 1 ? elem.t1 : zero(elem.t1),
+        t2 = i == count ? elem.t2 : zero(elem.t2),
+        r1 = i == 1 ? elem.r1 : zero(elem.r1),
+        r2 = i == count ? elem.r2 : zero(elem.r2),
+    )) for i in 1:count]
+end
+
+const _SLICED_MULTIPOLE = Union{
+    Quadrupole,Sextupole,Octupole,
+    QuadrupoleSC,SextupoleSC,OctupoleSC,
+}
+
+function _slice_multipole(elem::_SLICED_MULTIPOLE, count::Int)
+    kick_angle = _slice_kick_angle(elem.kick_angle, count)
+    return [_replace_element_fields(elem, (
+        L = elem.L / count,
+        num_int_steps = 1,
+        fringe_entrance = i == 1 ? elem.fringe_entrance : 0,
+        fringe_exit = i == count ? elem.fringe_exit : 0,
+        t1 = i == 1 ? elem.t1 : zero(elem.t1),
+        t2 = i == count ? elem.t2 : zero(elem.t2),
+        r1 = i == 1 ? elem.r1 : zero(elem.r1),
+        r2 = i == count ? elem.r2 : zero(elem.r2),
+        kick_angle = kick_angle,
+    )) for i in 1:count]
+end
+
+const _SLICED_BEND = Union{SBend,ExactSBend,SBendSC}
+
+function _slice_bend(elem::_SLICED_BEND, count::Int)
+    kick_angle = _slice_kick_angle(elem.kick_angle, count)
+    return [_replace_element_fields(elem, (
+        L = elem.L / count,
+        angle = elem.angle / count,
+        e1 = i == 1 ? elem.e1 : zero(elem.e1),
+        e2 = i == count ? elem.e2 : zero(elem.e2),
+        num_int_steps = elem.num_int_steps == 0 ? 0 : 1,
+        fint1 = i == 1 ? elem.fint1 : zero(elem.fint1),
+        fint2 = i == count ? elem.fint2 : zero(elem.fint2),
+        fringe_bend_entrance = i == 1 ? elem.fringe_bend_entrance : 0,
+        fringe_bend_exit = i == count ? elem.fringe_bend_exit : 0,
+        fringe_quad_entrance = i == 1 ? elem.fringe_quad_entrance : 0,
+        fringe_quad_exit = i == count ? elem.fringe_quad_exit : 0,
+        t1 = i == 1 ? elem.t1 : zero(elem.t1),
+        t2 = i == count ? elem.t2 : zero(elem.t2),
+        r1 = i == 1 ? elem.r1 : zero(elem.r1),
+        r2 = i == count ? elem.r2 : zero(elem.r2),
+        kick_angle = kick_angle,
+    )) for i in 1:count]
+end
+
+function _slice_lbend(elem::LBend, count::Int)
+    return [_replace_element_fields(elem, (
+        L = elem.L / count,
+        angle = elem.angle / count,
+        e1 = i == 1 ? elem.e1 : zero(elem.e1),
+        e2 = i == count ? elem.e2 : zero(elem.e2),
+        fint1 = i == 1 ? elem.fint1 : zero(elem.fint1),
+        fint2 = i == count ? elem.fint2 : zero(elem.fint2),
+        t1 = i == 1 ? elem.t1 : zero(elem.t1),
+        t2 = i == count ? elem.t2 : zero(elem.t2),
+        r1 = i == 1 ? elem.r1 : zero(elem.r1),
+        r2 = i == count ? elem.r2 : zero(elem.r2),
+    )) for i in 1:count]
+end
+
+@inline _has_tracking_steps(::AbstractElement) = false
+@inline _has_tracking_steps(::_SLICED_MULTIPOLE) = true
+@inline _has_tracking_steps(::_SLICED_BEND) = true
+@inline _is_length_refinable(::AbstractElement) = false
+@inline _is_length_refinable(::Union{_SLICED_DRIFT,_SLICED_BEND,LBend}) = true
+
+function _optics_slice_count(elem::AbstractElement, sample_integrator_steps::Bool,
+                             max_step)
+    count = 1
+    if sample_integrator_steps && _has_tracking_steps(elem)
+        count = max(count, getfield(elem, :num_int_steps))
+    end
+    if max_step !== nothing && _is_length_refinable(elem) && !iszero(get_length(elem))
+        count = max(count, ceil(Int, abs(get_length(elem)) / max_step))
+        # Do not replace a configured bend integrator by fewer, larger steps.
+        if elem isa _SLICED_BEND && elem.num_int_steps > 0
+            count = max(count, elem.num_int_steps)
+        end
+    end
+    return count
+end
+
+function _slice_for_optics(elem::AbstractElement, count::Int)
+    count == 1 && return AbstractElement[elem]
+    elem isa _SLICED_DRIFT && return _slice_drift(elem, count)
+    elem isa _SLICED_MULTIPOLE && return _slice_multipole(elem, count)
+    elem isa _SLICED_BEND && return _slice_bend(elem, count)
+    elem isa LBend && return _slice_lbend(elem, count)
+    throw(ArgumentError("$(typeof(elem)) cannot be split for optics sampling"))
+end
+
+"""
+    refine_lattice(lat; sample_integrator_steps=true, max_step=nothing)
+
+Return a lattice refined for optics sampling. Thick multipoles and bends are
+split at their configured integration steps when `sample_integrator_steps` is
+true. `max_step` additionally limits the length of drift and bend pieces.
+
+Entrance offsets, rotations, pole-face maps, and fringes are retained only on
+the first piece; their exit counterparts are retained only on the last piece.
+If `max_step` requests bend pieces shorter than the configured integration
+step, the bend integration is refined to match the requested sampling.
+"""
+function refine_lattice(lat::Lattice;
+                        sample_integrator_steps::Bool=true,
+                        max_step::Union{Nothing,Real}=nothing)
+    if max_step !== nothing
+        isfinite(max_step) && max_step > 0 ||
+            throw(ArgumentError("max_step must be finite and positive"))
+    end
+
+    elements = AbstractElement[]
+    for elem in lat.elements
+        count = _optics_slice_count(elem, sample_integrator_steps, max_step)
+        append!(elements, _slice_for_optics(elem, count))
+    end
+    return Lattice(elements; name=lat.name, periodic=lat.periodic)
+end
 
 """
     total_length(lat::Lattice; time=0.0, turn=0)

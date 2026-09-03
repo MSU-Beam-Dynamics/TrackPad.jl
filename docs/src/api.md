@@ -76,6 +76,7 @@ optics2D
 optics4DUC
 TwissLineResult
 TransportTwissResult
+refine_lattice
 ```
 
 ### Map Computation
@@ -93,6 +94,7 @@ findm66_refpts
 
 ```@docs
 periodic_twiss
+periodic_dispersion
 transport_twiss
 twissline
 twissring
@@ -100,6 +102,14 @@ twissPropagate
 periodicEdwardsTengTwiss
 gettune
 getchrom
+```
+
+### Lattice Illustrations
+
+```@docs
+LatticeGlyph
+lattice_plot_data
+plot_lattice!
 ```
 
 ### Closed Orbit

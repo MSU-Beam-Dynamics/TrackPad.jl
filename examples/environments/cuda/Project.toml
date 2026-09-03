@@ -1,0 +1,11 @@
+[deps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+TrackPad = "e7bec244-bd43-46ed-8fec-7dc091d24617"
+
+[sources]
+TrackPad = {path = "../../.."}
+
+[compat]
+CUDA = "5"
+TrackPad = "0.1"
+julia = "1.10"

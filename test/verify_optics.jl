@@ -37,16 +37,125 @@ beam = Beam(3.0e9)
     @test transported.betax[1] == entrance.optics_x.beta
     @test transported.betay[1] == entrance.optics_y.beta
     @test periodic_twiss(ring, beam).tunex == twissline(ring, beam).tunex
+    dispersion = periodic_dispersion(ring, beam)
+    @test dispersion isa DispersionLineResult
+    @test length(dispersion.s) == length(ring) + 1
+    @test all(iszero, dispersion.dx)
+    @test all(iszero, dispersion.dpx)
+    @test all(iszero, dispersion.dy)
+    @test all(iszero, dispersion.dpy)
     @test_throws ArgumentError one_turn_map(line, beam)
     @test_throws ArgumentError gettune(line, beam)
     @test_throws ArgumentError getchrom(line, beam)
     @test_throws ArgumentError twissline(line, beam)
     @test_throws ArgumentError periodic_twiss(line, beam)
+    @test_throws ArgumentError periodic_dispersion(line, beam)
     @test_throws ArgumentError find_closed_orbit_4d(line, beam)
     @test_throws ArgumentError ringpass(
         line, zero(SVector{6,Float64}), beam, 1,
     )
     @test isperiodic(materialize_lattice(ring))
+end
+
+@testset "Twiss sampling inside thick elements" begin
+    sampled = refine_lattice(
+        ring; sample_integrator_steps=true, max_step=0.25,
+    )
+    # Two four-piece drifts and two eight-step quadrupoles.
+    @test length(sampled) == 24
+    @test isperiodic(sampled)
+    @test sampled.name == ring.name
+    @test all(isapprox.(get_length.(sampled.elements[1:4]), 0.25))
+    @test all(e -> e isa Quadrupole && e.num_int_steps == 1,
+              sampled.elements[5:12])
+
+    tw_coarse = periodic_twiss(ring, beam)
+    tw_sampled = periodic_twiss(
+        ring, beam; sample_integrator_steps=true, max_step=0.25,
+    )
+    @test length(tw_coarse.s) == length(ring) + 1
+    @test length(tw_sampled.s) == length(sampled) + 1
+    @test tw_sampled.s[end] == tw_coarse.s[end]
+    @test isapprox(tw_sampled.tunex, tw_coarse.tunex; atol=2e-15)
+    @test isapprox(tw_sampled.tuney, tw_coarse.tuney; atol=2e-15)
+    @test isapprox(tw_sampled.betax[end], tw_coarse.betax[end]; atol=2e-13)
+    @test isapprox(tw_sampled.betay[end], tw_coarse.betay[end]; atol=2e-13)
+
+    dispersion_sampled = periodic_dispersion(
+        ring, beam; sample_integrator_steps=true, max_step=0.25,
+    )
+    @test dispersion_sampled.s == tw_sampled.s
+
+    line = Lattice(AbstractElement[Drift(1.0), QF])
+    entrance = optics4DUC(2.0, 0.1, 3.0, -0.2)
+    transported = transport_twiss(
+        line, beam, entrance;
+        sample_integrator_steps=true, max_step=0.2,
+    )
+    @test length(transported.s) == 5 + QF.num_int_steps + 1
+    @test transported.s[end] == 1.0 + QF.L
+    @test_throws ArgumentError refine_lattice(line; max_step=0.0)
+    @test_throws ArgumentError refine_lattice(line; max_step=Inf)
+
+    sc_line = Lattice(AbstractElement[
+        DriftSC(0.6), QuadrupoleSC(0.3; k1=0.5, num_int_steps=3),
+    ])
+    sc_sampled = refine_lattice(
+        sc_line; sample_integrator_steps=true, max_step=0.2,
+    )
+    @test length(sc_sampled) == 6
+    @test all(e -> e isa QuadrupoleSC && e.num_int_steps == 1,
+              sc_sampled.elements[4:6])
+end
+
+@testset "Optics slicing preserves bend endpoints" begin
+    t1 = @SVector [1e-5, 0.0, -2e-5, 0.0, 0.0, 0.0]
+    t2 = -t1
+    bend = SBend(
+        1.0, 0.1, 0.02, 0.03;
+        num_int_steps=5, fint1=0.4, fint2=0.5, gap=0.02,
+        fringe_bend_entrance=1, fringe_bend_exit=1,
+        fringe_quad_entrance=1, fringe_quad_exit=1,
+        polynom_b=[0.0, 0.2, 0.0, 0.0],
+        kick_angle=[2e-4, -3e-4], t1=t1, t2=t2,
+    )
+    bend_line = Lattice(AbstractElement[bend])
+    pieces = refine_lattice(bend_line; sample_integrator_steps=true)
+    @test length(pieces) == bend.num_int_steps
+    @test pieces[1].e1 == bend.e1
+    @test pieces[1].fringe_bend_entrance == 1
+    @test pieces[1].fringe_quad_entrance == 1
+    @test pieces[1].t1 == bend.t1
+    @test all(p -> iszero(p.e1) && p.fringe_bend_entrance == 0 &&
+                    p.fringe_quad_entrance == 0 && iszero(p.t1),
+              pieces.elements[2:end])
+    @test pieces[end].e2 == bend.e2
+    @test pieces[end].fringe_bend_exit == 1
+    @test pieces[end].fringe_quad_exit == 1
+    @test pieces[end].t2 == bend.t2
+    @test all(p -> iszero(p.e2) && p.fringe_bend_exit == 0 &&
+                    p.fringe_quad_exit == 0 && iszero(p.t2),
+              pieces.elements[1:end-1])
+
+    r0 = @SVector [1e-3, 2e-4, -3e-4, 1e-4, 0.0, 1e-3]
+    @test isapprox(
+        linepass(bend_line, r0, beam), linepass(pieces, r0, beam);
+        atol=5e-15, rtol=0,
+    )
+
+    linear_bend = LBend(
+        1.2, 0.12, 0.03, 0.04;
+        K=0.2, by_error=1e-4, fint1=0.3, fint2=0.4, full_gap=0.02,
+    )
+    linear_line = Lattice(AbstractElement[linear_bend])
+    linear_pieces = refine_lattice(linear_line; max_step=0.25)
+    @test length(linear_pieces) == 5
+    @test linear_pieces[1].e1 == linear_bend.e1
+    @test linear_pieces[end].e2 == linear_bend.e2
+    @test isapprox(
+        linepass(linear_line, r0, beam), linepass(linear_pieces, r0, beam);
+        atol=5e-15, rtol=0,
+    )
 end
 
 @testset "Longitudinal coordinate convention" begin

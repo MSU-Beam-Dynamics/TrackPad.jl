@@ -30,6 +30,9 @@ include("tracking.jl")
 # Lattice and beam definitions
 include("lattice.jl")
 
+# Backend-independent lattice illustration geometry
+include("lattice_plot.jl")
+
 # Linear optics utilities
 include("optics.jl")
 
@@ -63,14 +66,15 @@ export TimeContext, TimeFunction, TimeDependentParam, Time, RealTime, Turn
 export teval, time_lower, static_timecheck
 export TimeVaryingElement, timed, materialize
 
-export Beam, Lattice, isperiodic
+export Beam, Lattice, isperiodic, refine_lattice
 export pass!, linepass, linepass!, ringpass, ringpass!
 export total_length, spos, findelem, get_length, materialize_lattice
+export LatticeGlyph, lattice_plot_data, plot_lattice!
 export AbstractOptics, AbstractOptics2D, AbstractOptics4D, optics2D, optics4DUC
-export TwissLineResult, TransportTwissResult
+export TwissLineResult, TransportTwissResult, DispersionLineResult
 export transfer_map, one_turn_map, findm66, fastfindm66, findm66_refpts, fastfindm66_refpts
 export twissPropagate, periodicEdwardsTengTwiss, twissring
-export gettune, getchrom, periodic_twiss, transport_twiss, twissline
+export gettune, getchrom, periodic_twiss, periodic_dispersion, transport_twiss, twissline
 export find_closed_orbit_4d, find_closed_orbit_6d
 export gaussian_distribution, matched_gaussian, matched_covariance
 export match_moments!, beam_covariance, projected_emittances, eigenemittances

@@ -1,51 +1,52 @@
 # TrackPad Examples
 
-Each example keeps its numerical calculation in an executable Julia file using
-only TrackPad and its direct dependencies. Notebook-only visualization packages
-are declared in `examples/Project.toml`. Calculation modules expose a
-`run_example` function, print a compact report when run directly, and are also
-exercised by the package test suite.
+These notebooks are for accelerator physicists who already know lattices,
+Twiss functions, response matrices, wakes, and maps, but are new to TrackPad.
+They introduce the Julia API directly and avoid repeating accelerator-physics
+derivations.
 
-## FODO Cell With Dipoles
+## Start here
 
-[`fodo_cell_with_dipoles.ipynb`](fodo_cell_with_dipoles.ipynb) is the primary
-tutorial. It combines explanatory notes, executable Julia cells, result tables,
-and plots in one Jupyter notebook. It builds one periodic FODO cell from
-finite-length quadrupoles and sector dipoles and reproduces the calculations in the
-[MSU Accelerator Physics notes](https://msu-beam-dynamics.github.io/AP_enotes/transverse_BD/examples/FODO_cell.html):
-
-- transfer matrices at three starting points;
-- stability, phase advance, and periodic Twiss parameters;
-- periodic horizontal dispersion;
-- natural chromaticity;
-- the dispersion invariant `H` and an endpoint radiation-integral estimate;
-- the phase advance that minimizes the normalized endpoint `H` estimate.
-
-The notes' Equations 9.4 and 9.9 are labeled “after QF,” but their matrix is the
-after-QD cyclic map under the focusing signs used in Equation 9.1. The example
-tests the published equation at the matching after-QD boundary and also reports
-the physically after-QF map. It likewise reproduces the notes' 100-point
-phase-scan minimum before calculating the continuous analytic minimum.
-
-Start Jupyter from the TrackPad repository root or the `examples` directory and
-open the notebook. Its first cell activates and instantiates the isolated
-examples environment. To prepare that environment manually:
+Run once from the repository root:
 
 ```bash
-julia --project=examples -e 'using Pkg; Pkg.instantiate()'
+julia --project=examples -e 'using Pkg; Pkg.resolve(); Pkg.instantiate()'
 ```
 
-The calculation module can also be run directly:
+Start Jupyter using your existing IJulia installation and open `examples/`.
+The first cell of each notebook activates the required environment.
+Notebooks 02 through 09 reuse the lattice imported in notebook 01, so each
+workflow operates on the same dipole-quadrupole-sextupole model.
+
+| Notebook | Workflow | Extra requirement |
+|---|---|---|
+| `00_fodo_quickstart.ipynb` | Construct a ring, track, obtain Twiss functions | CairoMakie |
+| `01_madx_import.ipynb` | Import MAD-X; compute and plot periodic optics | CairoMakie |
+| `02_tpsa_map.ipynb` | Compute and inspect a second-order map | PolySeries |
+| `03_ad_tracking.ipynb` | Batched Jacobians of tracking | Enzyme |
+| `04_ad_tpsa.ipynb` | Differentiate a TPSA coefficient with respect to strength | Enzyme + PolySeries |
+| `05_impedance_wake.ipynb` | Apply an RLC wake to a macroparticle bunch | CairoMakie |
+| `06_lattice_matching.ipynb` | Match two quadrupole families to target tunes | none |
+| `07_orbit_correction.ipynb` | Build and invert an orbit response matrix | none |
+| `08_optics_correction.ipynb` | Correct beta beating with family response knobs | none |
+| `09_gpu_and_parameter_sweeps.ipynb` | Batch tracking and aligned/Cartesian scans | CUDA for NVIDIA execution |
+
+The optional notebooks activate and instantiate small environments under
+`environments/` in their first cell. To prepare one manually instead:
 
 ```bash
-julia --project=. examples/fodo_cell_with_dipoles.jl
+julia --project=examples/environments/tpsa -e 'using Pkg; Pkg.instantiate()'
 ```
 
-The analytical equations use the thin-lens and small-angle approximations from
-the notes. The TrackPad lattice deliberately uses finite magnets, so the example
-reports and bounds the resulting approximation errors instead of expecting the
-two models to be bit-for-bit identical.
+The GPU notebook also runs its batch and sweep sections on the CPU, so its data layout
+can be learned without NVIDIA hardware.
 
-The notebook uses CairoMakie to plot the periodic beta functions and dispersion
-through the finite cell, as well as the analytical phase-advance scans.
-CairoMakie remains isolated from TrackPad's core dependencies.
+All notebooks are committed without saved output. Paths are resolved relative
+to this directory, so either the repository root or `examples/` is a valid
+Jupyter working directory.
+
+## Detailed derivation
+
+`advanced/fodo_cell_derivations.ipynb` retains the original, equation-by-equation
+FODO example based on the MSU Accelerator Physics notes. It is a validation
+study rather than the recommended introduction to TrackPad.

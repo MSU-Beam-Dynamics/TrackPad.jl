@@ -15,6 +15,7 @@ YAML = "ddb6d928-2868-570f-bddf-ab3f9cf99eb6"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
 Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
+Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
 PolySeries = "6f3fcde8-8165-4326-91a7-f7698485e8a3"
 
 [sources]
@@ -25,6 +26,7 @@ PolySeries = {path = "../PolySeries.jl"}
 TrackPadCUDAExt = "CUDA"
 TrackPadEnzymeExt = "Enzyme"
 TrackPadMetalExt = "Metal"
+TrackPadMakieExt = "Makie"
 TrackPadPolySeriesExt = "PolySeries"
 
 [compat]
@@ -33,6 +35,7 @@ CUDA = "5"
 Enzyme = "0.13"
 KernelAbstractions = "0.9"
 Metal = "1"
+Makie = "0.24"
 PolySeries = "0.1"
 StaticArrays = "1.9"
 YAML = "0.4"

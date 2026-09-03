@@ -18,6 +18,8 @@ docs/site/
 # Test and data artifacts
 test/tmp/
 data/
+!examples/data/
+!examples/data/fodo.madx
 outputs/
 plots/
 scripts/

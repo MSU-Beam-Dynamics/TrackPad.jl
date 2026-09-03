@@ -15,9 +15,9 @@ using LinearAlgebra
 using StaticArrays
 
 export AbstractOptics, AbstractOptics2D, AbstractOptics4D, optics2D, optics4DUC
-export TwissLineResult, TransportTwissResult
+export TwissLineResult, TransportTwissResult, DispersionLineResult
 export transfer_map, one_turn_map, gettune, getchrom
-export periodic_twiss, transport_twiss, twissline
+export periodic_twiss, periodic_dispersion, transport_twiss, twissline
 export find_closed_orbit_4d, find_closed_orbit_6d
 export findm66, fastfindm66, findm66_refpts, fastfindm66_refpts
 export periodicEdwardsTengTwiss, twissring, twissPropagate
@@ -91,6 +91,22 @@ struct TwissLineResult{T}
     muy::Vector{T}
     tunex::T
     tuney::T
+end
+
+"""
+    DispersionLineResult
+
+Periodic transverse dispersion at every lattice boundary. The fields `dx`,
+`dpx`, `dy`, and `dpy` are derivatives with respect to TrackPad's canonical
+energy coordinate `delta_E`. Multiply them by `beam.beta` for derivatives with
+respect to the MAD-X momentum coordinate `deltap`.
+"""
+struct DispersionLineResult{T}
+    s::Vector{T}
+    dx::Vector{T}
+    dpx::Vector{T}
+    dy::Vector{T}
+    dpy::Vector{T}
 end
 
 """
@@ -520,17 +536,29 @@ function _element_jacobians(lat::Lattice, beam::Beam{T},
 end
 
 """
-    transport_twiss(lat, beam, entrance; reference=zeros, h=1e-8)
+    transport_twiss(lat, beam, entrance; reference=zeros, h=1e-8,
+                    sample_integrator_steps=false, max_step=nothing)
 
 Propagate supplied uncoupled entrance Twiss parameters through one lattice
 pass. This is the Twiss API for an open transport line and is also valid for a
 single pass through a ring.
+
+Set `sample_integrator_steps=true` to return optics at every configured thick-
+element integration step. Set `max_step` to limit the length of sampled drift
+and bend pieces. See [`refine_lattice`](@ref) for edge-handling details.
 """
 function transport_twiss(lat::Lattice, beam::Beam{T}, entrance::optics4DUC;
                          reference::SVector{6,T}=zero(SVector{6,T}),
-                         h::T=T(1e-8)) where T
-    s, jacobians = _element_jacobians(lat, beam, reference, h)
-    n = length(lat)
+                         h::T=T(1e-8),
+                         sample_integrator_steps::Bool=false,
+                         max_step::Union{Nothing,Real}=nothing) where T
+    sampled_lat = if sample_integrator_steps || max_step !== nothing
+        refine_lattice(lat; sample_integrator_steps, max_step)
+    else
+        lat
+    end
+    s, jacobians = _element_jacobians(sampled_lat, beam, reference, h)
+    n = length(sampled_lat)
 
     betax = zeros(T, n + 1)
     alphax = zeros(T, n + 1)
@@ -562,16 +590,25 @@ function transport_twiss(lat::Lattice, beam::Beam{T}, entrance::optics4DUC;
 end
 
 """
-    twissline(lat, beam; reference=zeros, h=1e-8)
+    twissline(lat, beam; reference=zeros, h=1e-8,
+              sample_integrator_steps=false, max_step=nothing)
 
-Compute uncoupled periodic Twiss functions at each element boundary.
+Compute uncoupled periodic Twiss functions at each element boundary. The
+sampling keywords have the same meaning as for [`transport_twiss`](@ref).
 """
 function twissline(lat::Lattice, beam::Beam{T};
                    reference::SVector{6,T}=zero(SVector{6,T}),
-                   h::T=T(1e-8)) where T
+                   h::T=T(1e-8),
+                   sample_integrator_steps::Bool=false,
+                   max_step::Union{Nothing,Real}=nothing) where T
     _require_periodic(lat, "twissline(lat, beam)")
-    n = length(lat)
-    s, Jlist = _element_jacobians(lat, beam, reference, h)
+    sampled_lat = if sample_integrator_steps || max_step !== nothing
+        refine_lattice(lat; sample_integrator_steps, max_step)
+    else
+        lat
+    end
+    n = length(sampled_lat)
+    s, Jlist = _element_jacobians(sampled_lat, beam, reference, h)
 
     M = Matrix{T}(I, 6, 6)
     for J in Jlist
@@ -611,6 +648,49 @@ ring-oriented name for [`twissline`](@ref).
 function periodic_twiss(lat::Lattice, beam::Beam; kwargs...)
     _require_periodic(lat, "periodic_twiss")
     return twissline(lat, beam; kwargs...)
+end
+
+"""
+    periodic_dispersion(lat, beam; reference=zeros, h=1e-8,
+                        sample_integrator_steps=false, max_step=nothing)
+
+Compute periodic transverse dispersion around `reference`. Results are
+derivatives with respect to the canonical energy coordinate `delta_E`; multiply
+by `beam.beta` to obtain the MAD-X momentum-dispersion convention.
+
+The sampling keywords are identical to [`periodic_twiss`](@ref).
+"""
+function periodic_dispersion(lat::Lattice, beam::Beam{T};
+                             reference::SVector{6,T}=zero(SVector{6,T}),
+                             h::T=T(1e-8),
+                             sample_integrator_steps::Bool=false,
+                             max_step::Union{Nothing,Real}=nothing) where T
+    _require_periodic(lat, "periodic_dispersion")
+    sampled_lat = if sample_integrator_steps || max_step !== nothing
+        refine_lattice(lat; sample_integrator_steps, max_step)
+    else
+        lat
+    end
+    s, jacobians = _element_jacobians(sampled_lat, beam, reference, h)
+
+    one_turn = Matrix{T}(I, 6, 6)
+    for jacobian in jacobians
+        one_turn = jacobian * one_turn
+    end
+
+    dispersion = zeros(T, 4, length(sampled_lat) + 1)
+    transverse = @view one_turn[1:4, 1:4]
+    dispersion[:, 1] .= (I - transverse) \ one_turn[1:4, 6]
+    for i in eachindex(jacobians)
+        jacobian = jacobians[i]
+        dispersion[:, i + 1] .=
+            jacobian[1:4, 1:4] * dispersion[:, i] + jacobian[1:4, 6]
+    end
+
+    return DispersionLineResult{T}(
+        s, dispersion[1, :], dispersion[2, :],
+        dispersion[3, :], dispersion[4, :],
+    )
 end
 
 """

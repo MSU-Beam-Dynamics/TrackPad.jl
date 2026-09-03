@@ -453,8 +453,12 @@ element apertures.
 
 - `one_turn_map` and `findm66` compute numerical Jacobians.
 - `gettune` extracts uncoupled tunes from transverse ``2\times2`` blocks.
-- `twissline` and `periodic_twiss` compute uncoupled periodic Twiss functions
-  at element boundaries; `transport_twiss` propagates supplied line optics.
+- `twissline` and `periodic_twiss` compute uncoupled periodic Twiss functions;
+  `transport_twiss` propagates supplied line optics. Results default to stored
+  element boundaries. `sample_integrator_steps=true` exposes configured thick-
+  element steps, and `max_step` refines long drifts and bends. During bend
+  refinement, entrance edge/fringe/frame maps remain on the first piece and
+  exit maps remain on the last piece.
 - `getchrom` defaults to the JuTrack-compatible forward difference; use
   `centered=true` for a centered derivative.
 - Coupled optics are not yet represented by `TwissLineResult`.

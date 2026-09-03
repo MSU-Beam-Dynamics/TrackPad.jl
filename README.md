@@ -53,7 +53,9 @@ r0 = @SVector [1e-3, 0.0, 0.0, 0.0, 0.0, 0.0]
 r1 = linepass(ring, r0, beam)
 
 qx, qy = gettune(ring, beam)
-twiss = periodic_twiss(ring, beam)
+twiss = periodic_twiss(
+    ring, beam; sample_integrator_steps=true, max_step=0.1,
+)
 orbit = find_closed_orbit_4d(ring, beam)
 ```
 
@@ -107,6 +109,7 @@ dependency activates its TrackPad extension automatically.
 
 ## Documentation
 
+- `examples/README.md`: numbered, workflow-oriented notebook series
 - `docs/src/guide.md`: human-oriented workflow
 - `docs/src/conventions.md`: normative coordinates, units, and normalization
 - `docs/src/elements.md`: element catalog and constructors

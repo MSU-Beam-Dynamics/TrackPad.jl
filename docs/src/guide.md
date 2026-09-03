@@ -232,6 +232,39 @@ println("Qx = ", tw.tunex)
 println("max βx = ", maximum(tw.betax), " m")
 ```
 
+By default, values are returned at stored element boundaries. For plots and
+local extrema inside thick elements, request denser sampling:
+
+```julia
+tw = periodic_twiss(
+    fodo, beam;
+    sample_integrator_steps = true, # one point per configured magnet step
+    max_step = 0.10,                # drift and bend pieces no longer than 10 cm
+)
+```
+
+The same keywords apply to [`transport_twiss`](@ref). Bend curvature and body
+multipoles are distributed over the pieces. Entrance pole-face, fringe,
+offset, and rotation maps occur only on the first piece; exit maps occur only
+on the last. If `max_step` is shorter than a bend's configured integration
+step, TrackPad also refines that bend's numerical integration.
+
+[`refine_lattice`](@ref) exposes the sampled lattice directly when element-to-
+sample correspondence is needed.
+
+Periodic dispersion uses the same sampling controls:
+
+```julia
+disp = periodic_dispersion(
+    fodo, beam; sample_integrator_steps=true, max_step=0.10,
+)
+Dx_madx = beam.beta .* disp.dx
+```
+
+The returned `dx`, `dpx`, `dy`, and `dpy` fields are derivatives with respect
+to TrackPad's canonical energy coordinate ``\delta_E``. Multiplication by
+`beam.beta` converts them to the MAD-X momentum-deviation convention.
+
 | Field | Description |
 |-------|-------------|
 | `s` | longitudinal positions [m] |
@@ -243,6 +276,27 @@ println("max βx = ", maximum(tw.betax), " m")
 The older `twissline(fodo, beam)` spelling remains compatible. The `twissring`
 overloads are JuTrack-style interfaces accepting a sixth-coordinate energy
 offset and map order.
+
+### Lattice Illustration
+
+After loading a Makie backend, draw a lattice strip on its own axis and link it
+to any longitudinal plot:
+
+```julia
+using CairoMakie, TrackPad
+
+fig = Figure()
+ax_lattice = Axis(fig[1, 1])
+ax_twiss = Axis(fig[2, 1], xlabel="s [m]", ylabel="beta [m]")
+plot_lattice!(ax_lattice, fodo)
+lines!(ax_twiss, tw.s, tw.betax)
+linkxaxes!(ax_lattice, ax_twiss)
+```
+
+`lattice_plot_data(fodo)` provides the same glyph positions and element classes
+without requiring Makie. This is useful for other plotting backends. Physical
+element boundaries remain in `s_start` and `s_end`; zero-length BPMs, kickers,
+and cavities receive a small visible `plot_start` to `plot_end` width.
 
 ### Open-Line Twiss
 
