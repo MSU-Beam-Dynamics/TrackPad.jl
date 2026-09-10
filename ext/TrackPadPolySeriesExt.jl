@@ -225,60 +225,14 @@ end
 end
 
 # ── Edge focusing ──
-
-@inline function edge_fringe_entrance_tpsa(r::SVector{6,CTPS{T}}, inv_rho::T, edge_angle::T,
-                                            fint::T, gap::T, method::Int) where T
-    if iszero(fint) || iszero(gap) || method == 0
-        fringecorr = zero(T)
-    else
-        sedge = sin(edge_angle)
-        cedge = cos(edge_angle)
-        fringecorr = inv_rho * gap * fint * (one(T) + sedge^2) / cedge
-    end
-
-    fx = inv_rho * tan(edge_angle)
-
-    if method == 1
-        fy = inv_rho * tan(edge_angle - fringecorr / (one(T) + cst(r[6])))
-    elseif method == 2
-        fy = inv_rho * tan(edge_angle - fringecorr / (one(T) + cst(r[6]))) / (one(T) + cst(r[6]))
-    elseif method == 3
-        fy = inv_rho * tan(edge_angle - fringecorr + cst(r[2]) / (one(T) + cst(r[6])))
-    else
-        fy = inv_rho * tan(edge_angle - fringecorr / (one(T) + cst(r[6])))
-    end
-
-    px_new = r[2] + r[1] * fx
-    py_new = r[4] - r[3] * fy
-    return SVector{6,CTPS{T}}(r[1], px_new, r[3], py_new, r[5], r[6])
-end
-
-@inline function edge_fringe_exit_tpsa(r::SVector{6,CTPS{T}}, inv_rho::T, edge_angle::T,
-                                        fint::T, gap::T, method::Int) where T
-    if iszero(fint) || iszero(gap) || method == 0
-        fringecorr = zero(T)
-    else
-        sedge = sin(edge_angle)
-        cedge = cos(edge_angle)
-        fringecorr = inv_rho * gap * fint * (one(T) + sedge^2) / cedge
-    end
-
-    fx = inv_rho * tan(edge_angle)
-
-    if method == 1
-        fy = inv_rho * tan(edge_angle - fringecorr / (one(T) + cst(r[6])))
-    elseif method == 2
-        fy = inv_rho * tan(edge_angle - fringecorr / (one(T) + cst(r[6]))) / (one(T) + cst(r[6]))
-    elseif method == 3
-        fy = inv_rho * tan(edge_angle - fringecorr - cst(r[2]) / (one(T) + cst(r[6])))
-    else
-        fy = inv_rho * tan(edge_angle - fringecorr / (one(T) + cst(r[6])))
-    end
-
-    px_new = r[2] + r[1] * fx
-    py_new = r[4] - r[3] * fy
-    return SVector{6,CTPS{T}}(r[1], px_new, r[3], py_new, r[5], r[6])
-end
+#
+# Dipole edge focusing is evaluated with TrackPad's generic kernels
+# (`edge_fringe_entrance`/`edge_fringe_exit`), which are written for any
+# coordinate type. An earlier TPSA-specific copy used `cst(r[6])`, i.e. only the
+# constant part of the series, and therefore dropped the chromatic (∂/∂δ) and,
+# for the THOMX model, the ∂/∂px terms of the edge focusing from the map.
+const edge_fringe_entrance_tpsa = TrackPad.edge_fringe_entrance
+const edge_fringe_exit_tpsa = TrackPad.edge_fringe_exit
 
 # ============================================================================
 # pass! dispatches on CTPS coordinates
@@ -290,12 +244,6 @@ function TrackPad.pass!(elem::Drift{T,N}, r::SVector{6,CTPS{T}}, beti::T) where 
     r = enter_misalignment(r, elem.t1, elem.r1)
     r = drift6_tpsa(r, elem.L, beti)
     r = exit_misalignment(r, elem.t2, elem.r2)
-    return r
-end
-
-# ── Marker ──
-
-function TrackPad.pass!(elem::Marker, r::SVector{6,CTPS{T}}, beti::T) where T
     return r
 end
 
@@ -599,42 +547,6 @@ function TrackPad.pass!(elem::SBendSC{T,N}, r::SVector{6,CTPS{T}}, beti::T) wher
     return r
 end
 
-# ── SpaceCharge (no-op) ──
-
-function TrackPad.pass!(elem::SpaceCharge{T,N}, r::SVector{6,CTPS{T}}, beti::T) where {T,N}
-    return r
-end
-
-# ── Translation ──
-
-function TrackPad.pass!(elem::Translation{T,N}, r::SVector{6,CTPS{T}}, beti::T) where {T,N}
-    r = drift6_tpsa(r, elem.ds, beti)
-    return SVector{6,CTPS{T}}(r[1] - elem.dx, r[2], r[3] - elem.dy,
-                              r[4], r[5], r[6])
-end
-
-# ── YRotation ──
-
-function TrackPad.pass!(elem::YRotation{T,N}, r::SVector{6,CTPS{T}}, beti::T) where {T,N}
-    angle = -elem.angle
-    if iszero(angle)
-        return r
-    end
-    ca = cos(angle)
-    sa = sin(angle)
-    ta = tan(angle)
-
-    pz2 = CTPS(one(T)) + 2*r[6]*beti + r[6]^2 - r[2]^2 - r[4]^2
-    pz = sqrt(pz2)
-    ptt = CTPS(one(T)) - ta * r[2] / pz
-
-    x_new  = r[1] / (ca * ptt)
-    px_new = ca * r[2] + sa * pz
-    y_new  = r[3] + ta * r[1] * r[4] / (pz * ptt)
-    z_new  = r[5] - ta * r[1] * (beti + r[6]) / (pz * ptt)
-    return SVector{6,CTPS{T}}(x_new, px_new, y_new, r[4], z_new, r[6])
-end
-
 # ── CrabCavity ──
 
 function TrackPad.pass!(elem::CrabCavity{T,N}, r::SVector{6,CTPS{T}}, beti::T) where {T,N}
@@ -703,41 +615,47 @@ function TrackPad.pass!(elem::InvLorentzBoost{T,N}, r::SVector{6,CTPS{T}}, beti:
                               r[5]*elem.cosang, delta_new)
 end
 
-# ── StrongThinGaussianBeam ──
+# ── StrongThinGaussianBeam / StrongGaussianBeam ──
+# The Bassetti-Erskine field needs the Faddeeva function of a complex series and
+# ordered comparisons, neither of which CTPS provides. Round beams use the
+# everywhere-convergent power series in r^2/(2σ^2) from the core (no division by
+# r^2, so the on-axis reference orbit is fine); elliptical beams are rejected.
 
-function TrackPad.pass!(elem::StrongThinGaussianBeam{T,N}, r::SVector{6,CTPS{T}}, beti::T) where {T,N}
-    sx2 = max(elem.rmssizex^2, eps(T))
-    sy2 = max(elem.rmssizey^2, eps(T))
-    dx = r[1] - elem.xoffset
-    dy = r[3] - elem.yoffset
-    g = elem.amplitude * exp(CTPS(-one(T)/2) * (dx^2 / sx2 + dy^2 / sy2))
-    px_new = r[2] - g * dx / sx2
-    py_new = r[4] - g * dy / sy2
-    return SVector{6,CTPS{T}}(r[1], px_new, r[3], py_new, r[5], r[6])
+@inline function _tpsa_beam_field(x, y, sigmax::T, sigmay::T, what::AbstractString) where T
+    sx2 = sigmax * sigmax
+    sy2 = sigmay * sigmay
+    abs(sx2 - sy2) <= T(1e-10) * (sx2 + sy2) || throw(ArgumentError(
+        "$what TPSA map: only round strong beams (rmssizex == rmssizey) have a " *
+        "series form of the beam-beam kick; the elliptical Bassetti-Erskine field " *
+        "needs the Faddeeva function of a complex series, which PolySeries does not provide."))
+    return TrackPad._round_beam_field_series(x, y, (sx2 + sy2) / 2)
 end
 
-# ── StrongGaussianBeam ──
+function TrackPad.pass!(elem::StrongThinGaussianBeam{T,N}, r::SVector{6,CTPS{T}}, beti::T) where {T,N}
+    dx = r[1] - elem.xoffset
+    dy = r[3] - elem.yoffset
+    Ex, Ey = _tpsa_beam_field(dx, dy, elem.rmssizex, elem.rmssizey, "StrongThinGaussianBeam")
+    return SVector{6,CTPS{T}}(r[1], r[2] + elem.amplitude * Ex, r[3], r[4] + elem.amplitude * Ey, r[5], r[6])
+end
 
 function TrackPad.pass!(elem::StrongGaussianBeam{T,N,V}, r::SVector{6,CTPS{T}}, beti::T) where {T,N,V}
-    if elem.nzslice <= 0
-        return r
-    end
-    sx2 = max(elem.beamsize[1]^2, eps(T))
-    sy2 = max(elem.beamsize[2]^2, eps(T))
-    factor = elem.charge / max(abs(elem.total_energy), eps(T))
-    px = r[2]
-    py = r[4]
+    elem.nzslice <= 0 && return r
+    x = r[1]; px = r[2]; y = r[3]; py = r[4]
     @inbounds for i in 1:elem.nzslice
-        w    = i <= length(elem.zslice_npar) ? elem.zslice_npar[i] : one(T) / T(elem.nzslice)
-        xoff = i <= length(elem.xoffsets)    ? elem.xoffsets[i]    : zero(T)
-        yoff = i <= length(elem.yoffsets)    ? elem.yoffsets[i]    : zero(T)
-        dx = r[1] - xoff
-        dy = r[3] - yoff
-        g = w * exp(CTPS(-one(T)/2) * (dx^2 / sx2 + dy^2 / sy2))
-        px = px - factor * g * dx / sx2
-        py = py - factor * g * dy / sy2
+        npar = i <= length(elem.zslice_npar) ? elem.zslice_npar[i] : T(elem.num_particle) / T(elem.nzslice)
+        zc = i <= length(elem.zslice_center) ? elem.zslice_center[i] : zero(T)
+        xoff = i <= length(elem.xoffsets) ? elem.xoffsets[i] : zero(T)
+        yoff = i <= length(elem.yoffsets) ? elem.yoffsets[i] : zero(T)
+        sstar = (r[5] - zc) / 2
+        xc = x + px * sstar
+        yc = y + py * sstar
+        Ex, Ey = _tpsa_beam_field(xc - xoff, yc - yoff, elem.beamsize[1], elem.beamsize[2], "StrongGaussianBeam")
+        px = px + (elem.kick_scale * npar) * Ex
+        py = py + (elem.kick_scale * npar) * Ey
+        x = xc - px * sstar
+        y = yc - py * sstar
     end
-    return SVector{6,CTPS{T}}(r[1], px, r[3], py, r[5], r[6])
+    return SVector{6,CTPS{T}}(x, px, y, py, r[5], r[6])
 end
 
 # ── LongitudinalRLCWake / LongitudinalWake ──
@@ -746,12 +664,51 @@ end
 # particle carries no bunch distribution, so TPSA wake tracking is rejected
 # (the base TrackPad.pass! methods throw ArgumentError).
 
+# ── Elements served by TrackPad's generic kernels ──
+# Marker, Patch, Translation, YRotation and SpaceCharge have no CTPS-specific
+# method: the core `pass!` implementations are written for any coordinate type
+# and their loss branches are guarded (`_check_pz2`, `_check_tiny`), so CTPS
+# coordinates flow through them unchanged.
+
+# ── ExactSBend ──
+# The exact-bend body, wedge (`bend_edge`, uses `asin`) and rotation (`yrot`)
+# are generic and work on CTPS. The hard-edge bend fringe (`bend_fringe`)
+# requires `atan`, which PolySeries does not define, so it is rejected
+# explicitly instead of failing deep inside the kernel.
+
+function TrackPad.pass!(elem::ExactSBend{T,N}, r::SVector{6,CTPS{T}}, beti::T) where {T,N}
+    if elem.fringe_bend_entrance != 0 || elem.fringe_bend_exit != 0
+        throw(ArgumentError(
+            "ExactSBend TPSA map: the hard-edge bend fringe (`fringe_bend_entrance`/" *
+            "`fringe_bend_exit` != 0) needs `atan` on CTPS, which PolySeries does " *
+            "not provide. Construct the element with fringe_bend_entrance=0, " *
+            "fringe_bend_exit=0 for TPSA maps."))
+    end
+    # Call the generic core kernel (the signature below excludes this method).
+    return invoke(TrackPad.pass!, Tuple{ExactSBend{T,N}, SVector{6}, T}, elem, r, beti)
+end
+
+# ── LBend ──
+# The linear bend body branches on the sign of the momentum-dependent focusing
+# strengths, which has no series analogue.
+
+function TrackPad.pass!(::LBend{T,N}, ::SVector{6,CTPS{T}}, ::T) where {T,N}
+    throw(ArgumentError(
+        "LBend has no TPSA map: its body selects the trigonometric or hyperbolic " *
+        "branch from the sign of the momentum-dependent focusing. Use SBend or " *
+        "ExactSBend for Taylor maps."))
+end
+
 # ============================================================================
 # linepass / ringpass — extend originals, dispatch on CTPS automatically
 # ============================================================================
 
 function TrackPad.linepass(lat::Lattice, r::SVector{6,CTPS{T}}, beam::Beam{T};
-                           time::Real=zero(T), turn::Integer=0) where T
+                           time::Real=zero(T), turn::Integer=0,
+                           check_apertures::Bool=true) where T
+    # `check_apertures` is accepted for signature parity with the Float64 path;
+    # an aperture test needs ordered comparisons that CTPS does not define, so
+    # a TPSA map is always computed as if the apertures were absent.
     β_inv = TrackPad.beti(beam)
     ctx = TrackPad.TimeContext(T(time); turn=turn)
     for elem in lat.elements
@@ -762,13 +719,15 @@ function TrackPad.linepass(lat::Lattice, r::SVector{6,CTPS{T}}, beam::Beam{T};
 end
 
 function TrackPad.linepass(lat::Lattice, r::SVector{6,CTPS{T}};
-                           time::Real=zero(T), turn::Integer=0) where T
+                           time::Real=zero(T), turn::Integer=0,
+                           check_apertures::Bool=true) where T
     beam = Beam(T(1.0e9))
     return TrackPad.linepass(lat, r, beam; time=time, turn=turn)
 end
 
 function TrackPad.ringpass(lat::Lattice, r::SVector{6,CTPS{T}}, beam::Beam{T}, nturns::Int;
-                           time::Real=zero(T), dt_turn::Real=zero(T), turn::Integer=0) where T
+                           time::Real=zero(T), dt_turn::Real=zero(T), turn::Integer=0,
+                           check_apertures::Bool=true) where T
     TrackPad._require_periodic(lat, "ringpass")
     nturns >= 0 || throw(ArgumentError("nturns must be nonnegative"))
     t = T(time)

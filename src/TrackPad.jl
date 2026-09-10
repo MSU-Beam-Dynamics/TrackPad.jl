@@ -60,6 +60,7 @@ export HKicker, VKicker
 export Wiggler, CrabCavity, AccelCavity, LongitudinalRFMap
 export LorentzBoost, InvLorentzBoost
 export StrongThinGaussianBeam, StrongGaussianBeam
+export classical_radius, beambeam_amplitude, gaussian_beam_field, faddeeva_w, CLASSICAL_RADIUS_EV_M
 export LongitudinalRLCWake, LongitudinalWake, wakefieldfunc_RLCWake, wakefieldfunc
 export physical_wake_scale
 export TimeContext, TimeFunction, TimeDependentParam, Time, RealTime, Turn

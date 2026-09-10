@@ -361,9 +361,9 @@ Each `M[i]` is a `CTPS` (complex truncated power series) object.
 coefficients ``R_{ij}``, and higher entries are the second-order monomials.
 
 !!! note "Hamiltonian convention"
-    `tpsa_map` uses the exact relativistic drift Hamiltonian
-    (controlled by `TrackPad.USE_EXACT_HAMILTONIAN`).  When comparing with
-    other codes, make sure they use the same convention.
+    `tpsa_map` uses the exact relativistic drift Hamiltonian, like all
+    TrackPad tracking (`TrackPad.USE_EXACT_HAMILTONIAN` is a constant `true`).
+    When comparing with other codes, make sure they use the same convention.
 
 ## Time-Dependent Parameters
 

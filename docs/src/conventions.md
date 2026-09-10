@@ -106,9 +106,11 @@ z_f &= z_i - L\left[
 ```
 
 This equation fixes both the meaning of `delta` and the sign of `z`.
-`USE_EXACT_HAMILTONIAN` is enabled by default. Disabling it selects the
-JuTrack-compatible ultrarelativistic approximation and changes nonlinear maps
-and chromaticity.
+`USE_EXACT_HAMILTONIAN` is a compile-time constant (`true`); all tracking,
+optics, TPSA and AD paths use the exact drift. The JuTrack-compatible
+ultrarelativistic approximation is still available for cross-code comparison
+through `drift6(r, L, beti, Val(false))`; it changes nonlinear maps and
+chromaticity.
 
 ### Beam covariance and emittance
 
@@ -174,10 +176,40 @@ this conversion in the standard and exact bend bodies, `Solenoid`,
 The scalar CPU, packed GPU, and PolySeries implementations use the same
 conversion where each element is supported.
 
+## Strong beam-beam kick
+
+`StrongThinGaussianBeam` and `StrongGaussianBeam` apply the transverse field of
+a bi-Gaussian strong beam through the Bassetti–Erskine formula (closed
+round-beam form when `σx = σy`), evaluated with a pure-arithmetic Faddeeva
+function so the same code runs in the packed GPU kernel:
+
+```math
+Δp_x = A\,E_x,\qquad Δp_y = A\,E_y,\qquad
+E_r^{\rm round} = \frac{2}{r}\left(1 - e^{-r^2/2σ^2}\right)
+```
+
+so the linear kick is `A x/σ²` and the far field is the `2A/r` Coulomb field of
+the whole charge. The coupling `A` (`amplitude` for the thin element,
+`kick_scale × zslice_npar[i]` per slice for the sliced one) is
+
+```math
+A = N\, r_{0,w}\, q_w q_s / γ_w
+```
+
+with `N` strong particles, and the classical radius `r_{0,w}`, charge `q_w` and
+Lorentz factor `γ_w` of the *weak* (tracked) beam; `beambeam_amplitude(beam, N,
+q_s)` builds it. Positive `A` (like charges) defocuses; the linear beam-beam
+parameter is `ξ = β* A / (4π σ²)`. `StrongGaussianBeam` adds Hirata's
+synchro-beam mapping: slice `i` meets a weak particle of coordinate `z` at
+`s* = (z - zslice_center[i])/2` from the IP (both `z` and `zslice_center`
+positive toward the head of their bunch), with drift–kick–drift-back in the
+transverse plane, constant beam size along the bunch (no hourglass) and no
+energy update. TPSA maps support round strong beams only.
+
 The following specialized paths remain approximations or require a separate
 model-specific normalization audit:
 
-- the drift selected by `USE_EXACT_HAMILTONIAN=false`, which deliberately uses
+- the linearized drift `drift6(r, L, beti, Val(false))`, which deliberately uses
   the ultrarelativistic ``p\simeq1+\delta_E`` Hamiltonian;
 - the Brown/SOLEIL/THOMX bend fringe-field models; and
 - synchrotron-radiation and other collective kicks (longitudinal wakes follow

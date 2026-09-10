@@ -1,11 +1,13 @@
 """
-    Wiggler{T, N}
+    Wiggler{T, N, V}
 
-Canonical wiggler element metadata. Harmonics are stored in six-integer
-blocks. Horizontal-field (`Bx`) blocks require nonzero `kx` and `kz` entries;
+Canonical wiggler element metadata. Harmonics are stored in six-value blocks
+`(index, amplitude, kx/kw, ky/kw, kz/kw, phase)` of the element's float type
+(amplitude ratios, wavenumber ratios and phases are not integers in general).
+Horizontal-field (`Bx`) blocks require nonzero `kx` and `kz` entries;
 vertical-field (`By`) blocks require nonzero `ky` and `kz` entries.
 """
-struct Wiggler{T, N, V<:AbstractVector{Int}} <: AbstractMagnet
+struct Wiggler{T, N, V<:AbstractVector{T}} <: AbstractMagnet
     name::N
     L::T
     lw::T
@@ -26,13 +28,13 @@ end
 function Wiggler(L;
                  name::Union{Symbol, String} = :WIGGLER,
                  lw = 0.0, Bmax = 0.0, Nsteps::Int = 10,
-                 By = [1, 1, 0, 1, 1, 0], Bx = Int[],
+                 By = [1.0, 1.0, 0.0, 1.0, 1.0, 0.0], Bx = Float64[],
                  energy = 1.0e9, rad::Int = 0,
                  t1 = nothing, t2 = nothing,
                  r1 = nothing, r2 = nothing)
     T = _promote_element_type(L, lw, Bmax, energy, t1, t2, r1, r2)
-    byv = Int[By...]
-    bxv = Int[Bx...]
+    byv = T[T(b) for b in By]
+    bxv = T[T(b) for b in Bx]
     isfinite(L) && L >= zero(T) || throw(ArgumentError("L must be finite and nonnegative"))
     isfinite(lw) && lw > zero(T) || throw(ArgumentError("lw must be finite and positive"))
     isfinite(Bmax) || throw(ArgumentError("Bmax must be finite"))
@@ -51,7 +53,7 @@ function Wiggler(L;
     end
     nh = length(byv) ÷ 6
     nv = length(bxv) ÷ 6
-    Wiggler{T, Symbol, Vector{Int}}(
+    Wiggler{T, Symbol, Vector{T}}(
         Symbol(name), T(L), T(lw), T(Bmax), Nsteps,
         byv, bxv, T(energy), nh, nv, rad,
         SVector{6, T}(_default_vec(t1, T, Val(6))),

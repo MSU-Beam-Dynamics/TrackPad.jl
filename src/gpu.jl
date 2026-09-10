@@ -63,6 +63,7 @@ const GPU_CORR   = Int32(8)
 const GPU_SOL    = Int32(9)
 const GPU_THIN   = Int32(10)
 const GPU_PATCH  = Int32(11)
+const GPU_BEAMBEAM = Int32(12)   # StrongThinGaussianBeam
 
 # ============================================================
 # Parameter layout
@@ -78,7 +79,10 @@ const GPU_PATCH  = Int32(11)
 #              (k is added to pb[2] for QUAD, pb[3]/2 for SEXT, pb[4]/6 for OCT)
 #   SBEND:
 #              [2]=angle  [3]=e1  [4]=e2  [5]=fint1  [6]=fint2  [7]=gap
-#              [8]=irho   [9..12]=pa[1..4]  [13..16]=pb[1..4]
+#              [8]=irho (DERIVED: the kernel recomputes angle/L; stored only
+#                        for inspection and never read back, so it must not be
+#                        swept -- vary `angle` (slot 2) or `L` (slot 1))
+#              [9..12]=pa[1..4]  [13..16]=pb[1..4]
 #              [17]=fringe_entrance  [18]=fringe_exit
 #   RFCAV:
 #              [2]=volt  [3]=freq  [4]=lag  [5]=energy  [6]=h  [7]=philag
@@ -88,6 +92,8 @@ const GPU_PATCH  = Int32(11)
 #   THIN:      [2..5]=pa[1..4]  [6..9]=pb[1..4]
 #   PATCH:     [2]=x_offset  [3]=y_offset  [4]=z_offset
 #              [5]=x_pitch   [6]=y_pitch   [7]=tilt  [8]=t_offset
+#   BEAMBEAM:  [2]=amplitude [3]=rmssizex  [4]=rmssizey
+#              [5]=xoffset   [6]=yoffset   (thin kick; L = 0)
 #
 # Int param slots:
 #   [1] = num_int_steps
@@ -466,14 +472,10 @@ end
         # no-op
 
     elseif etype == GPU_PATCH
-        x, px, y, py, z, d = _patch_coordinates(
-            x,
-            px,
-            y,
-            py,
-            z,
-            d,
-            beti,
+        # Reuse the scalar kernel: an unnamed Patch is an isbits struct and the
+        # SVector round trip is free inside the kernel.
+        patch = Patch{T, Nothing}(
+            nothing,
             @inbounds(fparams[2, i]),
             @inbounds(fparams[3, i]),
             @inbounds(fparams[4, i]),
@@ -482,6 +484,8 @@ end
             @inbounds(fparams[7, i]),
             @inbounds(fparams[8, i]),
         )
+        r = pass!(patch, SVector{6,T}(x, px, y, py, z, d), beti)
+        x = r[1]; px = r[2]; y = r[3]; py = r[4]; z = r[5]; d = r[6]
 
     elseif etype == GPU_QUAD || etype == GPU_SEXT || etype == GPU_OCT
         k   = @inbounds fparams[2, i]
@@ -500,7 +504,11 @@ end
         e1     = @inbounds fparams[3, i]; e2    = @inbounds fparams[4, i]
         fint1  = @inbounds fparams[5, i]; fint2 = @inbounds fparams[6, i]
         gap    = @inbounds fparams[7, i]
-        irho   = @inbounds fparams[8, i]
+        # Curvature is DERIVED from the angle and length actually in force for
+        # this element, so a parameter sweep of `angle` (slot 2) or `L`
+        # (slot 1) stays self-consistent. Reading a separately stored `irho`
+        # here made angle sweeps silently track the unswept curvature.
+        irho   = L > zero(T) ? angle / L : zero(T)
         pa0    = @inbounds fparams[9, i];  pa1 = @inbounds fparams[10,i]
         pa2    = @inbounds fparams[11,i];  pa3 = @inbounds fparams[12,i]
         pb0    = @inbounds fparams[13,i];  pb1 = @inbounds fparams[14,i]
@@ -568,6 +576,15 @@ end
         px, py = _gpu_strkick(px, py, x, y,
                                pa0, pa1, pa2, pa3,
                                pb0, pb1, pb2, pb3, one(T))
+
+    elseif etype == GPU_BEAMBEAM
+        # Same Bassetti-Erskine kernel as the scalar path (pure arithmetic).
+        amplitude = @inbounds fparams[2, i]
+        sx  = @inbounds fparams[3, i]; sy = @inbounds fparams[4, i]
+        xo  = @inbounds fparams[5, i]; yo = @inbounds fparams[6, i]
+        Ex, Ey = gaussian_beam_field(x - xo, y - yo, sx, sy)
+        px += amplitude * Ex
+        py += amplitude * Ey
     end  # GPULattice construction guarantees a supported element type code.
 
     return x, px, y, py, z, d
@@ -589,6 +606,7 @@ function _gpu_elem_type(elem)::Int32
     elem isa Solenoid      && return GPU_SOL
     elem isa ThinMultipole && return GPU_THIN
     elem isa Patch         && return GPU_PATCH
+    elem isa StrongThinGaussianBeam && return GPU_BEAMBEAM
     throw(ArgumentError("GPU tracking does not support $(typeof(elem))"))
 end
 
@@ -646,7 +664,7 @@ function _gpu_fparams(::Type{T}, elem) where T
         fp[5]  = T(hasproperty(elem, :fint1) ? elem.fint1 : 0)
         fp[6]  = T(hasproperty(elem, :fint2) ? elem.fint2 : 0)
         fp[7]  = T(hasproperty(elem, :gap)   ? elem.gap   : 0)
-        fp[8]  = L > zero(T) ? T(elem.angle) / L : zero(T)  # irho
+        fp[8]  = L > zero(T) ? T(elem.angle) / L : zero(T)  # derived; see layout note
         for k in 1:4
             active = k - 1 <= elem.max_order
             fp[8+k]  = active ? T(elem.polynom_a[k]) : zero(T)
@@ -676,6 +694,12 @@ function _gpu_fparams(::Type{T}, elem) where T
             fp[1+k] = active ? T(elem.polynom_a[k]) : zero(T)
             fp[5+k] = active ? T(elem.polynom_b[k]) : zero(T)
         end
+
+    elseif et == GPU_BEAMBEAM
+        fp[1] = zero(T)
+        fp[2] = T(elem.amplitude)
+        fp[3] = T(elem.rmssizex); fp[4] = T(elem.rmssizey)
+        fp[5] = T(elem.xoffset);  fp[6] = T(elem.yoffset)
 
     elseif et == GPU_PATCH
         fp[2] = T(elem.x_offset)
@@ -771,8 +795,10 @@ configurations.
 | Quad     |  1   | `L`                  |
 | Quad     |  2   | `k1`                 |
 | Sext     |  2   | `k2`                 |
-| SBend    |  2   | `angle`              |
-| SBend    |  8   | `irho` (= angle/L)   |
+| SBend    |  2   | `angle` (curvature follows automatically) |
+| StrongThinGaussianBeam | 2 | `amplitude` (N r0 q q / γ)   |
+| StrongThinGaussianBeam | 3, 4 | `rmssizex`, `rmssizey`    |
+| StrongThinGaussianBeam | 5, 6 | `xoffset`, `yoffset`      |
 | RFCavity |  2   | `volt` (V)           |
 | RFCavity |  3   | `freq` (Hz)          |
 
@@ -806,6 +832,7 @@ function ParamSweepLattice(gl::GPULattice{T}, variations;
     lengths = Vector{Int}(undef, n_variations)
     variation_index_cpu = zeros(Int32, Int(N_GPU_FPARAMS), n_elements)
     varied_elements_cpu = zeros(Int32, n_elements)
+    element_types = Array(gl.elem_types)   # host copy for validation
 
     for (variation, entry) in enumerate(variations)
         length(entry) == 3 ||
@@ -821,6 +848,14 @@ function ParamSweepLattice(gl::GPULattice{T}, variations;
             throw(BoundsError(gl.fparams, (slot, element)))
         iszero(variation_index_cpu[slot, element]) ||
             throw(ArgumentError("parameter slot $slot of element $element is varied more than once"))
+        # Slot 8 of a bend holds the derived curvature angle/L, which the kernel
+        # recomputes from slots 2 and 1. Sweeping it would have no effect on the
+        # tracked orbit, so reject it instead of returning unswept results.
+        if element_types[element] == GPU_SBEND && slot == 8
+            throw(ArgumentError(
+                "slot 8 (irho) of bend element $element is derived from the " *
+                "angle and length; sweep slot 2 (angle) or slot 1 (L) instead"))
+        end
 
         vals = vec(T.(Array(values)))
         isempty(vals) &&
@@ -1012,31 +1047,51 @@ end
 # ============================================================
 
 """
-    cpu_batch_linepass!(coords::Matrix{T}, lat::Lattice,
-                        beam::Beam, nturns::Integer = 1) -> coords
+    cpu_batch_linepass!(coords::Matrix{T}, lat::Lattice, beam::Beam,
+                        nturns::Integer = 1;
+                        time=0, dt_turn=0, turn=0) -> coords
 
 CPU multi-threaded version of `batch_linepass!`.  Uses `Threads.@threads`
 to parallelise over particles.  No GPU required.
+
+Lost particles (global coordinate limits or an element aperture) are written
+back as `NaN`. Time-varying elements are resolved once per turn at
+`(time + (n-1)*dt_turn, turn + n - 1)`, matching [`ringpass!`](@ref).
 """
 function cpu_batch_linepass!(coords::Matrix{T}, lat::Lattice,
                               beam::Beam = Beam(1e9),
-                              nturns::Integer = 1) where T
+                              nturns::Integer = 1;
+                              time::Real = zero(T), dt_turn::Real = zero(T),
+                              turn::Integer = 0) where T
     nturns >= 0 || throw(ArgumentError("nturns must be nonnegative"))
     nturns <= 1 || lat.periodic || throw(ArgumentError(
         "repeated CPU batch tracking requires a periodic lattice",
     ))
     n  = size(coords, 1)
     β_inv = T(beti(beam))
+    nan6 = SVector{6,T}(T(NaN), T(NaN), T(NaN), T(NaN), T(NaN), T(NaN))
+    t = T(time)
+    dt = T(dt_turn)
+    trn = Int(turn)
     for _ in 1:nturns
+        # Resolve time/turn-dependent elements once per turn, outside the
+        # threaded loop. Previously every particle rebuilt them at turn 0, which
+        # both froze turn-dependent parameters and materialized each element
+        # once per particle.
+        ctx = TimeContext(t; turn=trn)
+        elements = _resolved_elements(lat, ctx)
         Threads.@threads for i in 1:n
             r = SVector{6, T}(coords[i,1], coords[i,2], coords[i,3],
                                coords[i,4], coords[i,5], coords[i,6])
-            ctx = TimeContext(zero(T))
-            for elem in lat.elements
-                elem_now = _resolve_for_time(elem, ctx)
+            for elem_now in elements
                 r = pass!(elem_now, r, β_inv)
                 if check_lost(r)
-                    r = SVector{6,T}(T(NaN), T(NaN), T(NaN), T(NaN), T(NaN), T(NaN))
+                    r = nan6
+                    break
+                end
+                rap, eap = _elem_apertures(elem_now)
+                if aperture_lost(r, rap, eap)
+                    r = nan6
                     break
                 end
             end
@@ -1044,6 +1099,8 @@ function cpu_batch_linepass!(coords::Matrix{T}, lat::Lattice,
             coords[i,3] = r[3]; coords[i,4] = r[4]
             coords[i,5] = r[5]; coords[i,6] = r[6]
         end
+        t += dt
+        trn += 1
     end
     return coords
 end

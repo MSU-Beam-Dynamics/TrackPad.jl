@@ -381,6 +381,7 @@ function _compile_pals(resolved::PALSResolvedBranch;
         push!(elements, _pals_build_element(
             occurrence.name, occurrence.definition;
             strict=strict, beam_energy=beam.energy, beam_charge=beam.charge,
+            beam_mass=beam.mass,
         ))
     end
     name = isempty(resolved.lattice_name) ? resolved.name : resolved.lattice_name
@@ -427,7 +428,7 @@ end
 
 function _pals_build_element(name::String, d::Dict;
                              strict::Bool=true, beam_energy::Real=1.0e9,
-                             beam_charge::Real=1.0)
+                             beam_charge::Real=1.0, beam_mass::Real=M_ELECTRON)
     kind = string(get(d, "kind", "Drift"))
     bp   = get(d, "BendP", Dict{String,Any}())
     len  = uppercase(kind) in ("BEND", "SBEND", "RBEND") ?
@@ -538,10 +539,19 @@ function _pals_build_element(name::String, d::Dict;
         pb = Float64[get(mmp, "Kn$(i-1)", 0.0) for i in 1:4]
         return ThinMultipole(len, pa, pb; name=Symbol(name))
     elseif k == "BEAMBEAM"
+        # Thin strong-beam kick. `amplitude = N r0_w q_w q_s / γ_w` is built from
+        # the strong-beam particle count and charge in the file and the weak
+        # (reference) beam of the lattice; the strong charge defaults to the
+        # weak-beam charge (same-species collider).
         sx = Float64(get(bbp, "sigma_x",    1e-3))
         sy = Float64(get(bbp, "sigma_y",    1e-3))
-        A  = Float64(get(bbp, "N_particle", 0.0))
-        return StrongThinGaussianBeam(A, sx, sy; name=Symbol(name))
+        npart = Float64(get(bbp, "N_particle", 0.0))
+        qs = Float64(get(bbp, "charge", beam_charge))
+        gamma_w = (Float64(beam_energy) + Float64(beam_mass)) / Float64(beam_mass)
+        amplitude = npart * classical_radius(beam_mass, beam_charge) * Float64(beam_charge) * qs / gamma_w
+        return StrongThinGaussianBeam(amplitude, sx, sy; name=Symbol(name),
+                                      xoffset=Float64(get(bbp, "x_offset", 0.0)),
+                                      yoffset=Float64(get(bbp, "y_offset", 0.0)))
     elseif k == "WIGGLER"
         return Wiggler(len; name=Symbol(name))
     else

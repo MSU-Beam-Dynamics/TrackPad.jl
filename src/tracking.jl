@@ -34,11 +34,17 @@ const KICK1 = 1.351207191959657328
 const KICK2 = -1.702414383919314656
 
 # =============================================================================
-# Global Settings (can be toggled)
+# Global Settings
 # =============================================================================
 # Use exact energy-coordinate Hamiltonian
 # Ps/P0 = sqrt(1 + 2δE/β0 + δE² - px² - py²) versus its linearized map.
-USE_EXACT_HAMILTONIAN::Bool = true
+#
+# This is a compile-time constant: `drift6` runs ~40 times per default thick
+# element per particle, and a mutable global there (a) reloads on every call,
+# (b) cannot be branch-folded, and (c) is treated by Enzyme as possibly-active
+# memory, which forces runtime activity analysis. The linearized drift remains
+# available for cross-code comparison via `drift6(r, L, beti, Val(false))`.
+const USE_EXACT_HAMILTONIAN = true
 
 # =============================================================================
 # Helper Functions (allocation-free)
@@ -59,6 +65,26 @@ USE_EXACT_HAMILTONIAN::Bool = true
 
 """Return NaN coords for real types; unreachable for TPSA types."""
 @inline _nan_coords(::Type{T}) where T<:Real = SVector{6,T}(T(NaN),T(NaN),T(NaN),T(NaN),T(NaN),T(NaN))
+
+"""
+    _lost_coords(r, ::Type{T})
+
+NaN coordinates for a lost particle, typed like the *normal* return of the
+kernel that lost it: the promotion of the coordinate type `S` and the element
+parameter type `T`. Returning `SVector{6,T}` (element type) here while the
+regular path returns `SVector{6,promote_type(T,S)}` makes the kernel's return
+type a `Union` whenever `S != T` (Dual coordinates, Dual element parameters,
+Float32 coordinates, ...), and every integrator loop that reassigns `r` then
+boxes on each step. For non-Real coordinates (TPSA) the loss branches are
+unreachable, so `r` itself is returned to keep the inferred type stable.
+"""
+@inline _lost_coords(::SVector{6,S}, ::Type{T}) where {S<:Real,T<:Real} =
+    _nan_coords(promote_type(S, T))
+@inline _lost_coords(r::SVector{6}, ::Type) = r
+
+"""Guard for `abs(val) < tol` tests (comparisons undefined on CTPS)."""
+@inline _check_tiny(val::Real, tol::Real) = abs(val) < tol
+@inline _check_tiny(_, _) = false
 
 """Guard for clamp in exact-bend helpers (comparisons undefined on CTPS)."""
 @inline _safe_clamp(val::Real, lo::Real, hi::Real) = clamp(val, lo, hi)
@@ -119,41 +145,46 @@ end
 # =============================================================================
 
 """
-    drift6!(r, L, beti=1.0) -> SVector{6,T}
+    drift6(r, L, beti=1.0[, ::Val{exact}]) -> SVector{6}
 
 Track particle through a drift space of length L.
-Uses exact Hamiltonian when USE_EXACT_HAMILTONIAN is true.
+Uses the exact Hamiltonian when `exact` is true (default:
+`USE_EXACT_HAMILTONIAN`); `Val(false)` selects the linearized `pz ≈ 1 + δ` map
+used for comparisons with codes that approximate the drift.
 
 # Arguments
-- `r::SVector{6,T}`: 6D phase space coordinates
+- `r::SVector{6,S}`: 6D phase space coordinates
 - `L::T`: Drift length
 - `beti::T`: 1/β (inverse relativistic velocity), default 1.0
 
 # Returns
-- Updated coordinates as SVector{6,T}
+- Updated coordinates as `SVector{6,promote_type(S,T)}`
 """
-@inline function drift6(r::SVector{6,S}, L::T, beti::T=one(T)) where {T<:Real,S}
-    if USE_EXACT_HAMILTONIAN
-        # Exact longitudinal momentum for δE = (E-E0)/(P0*c).
-        pz2 = one(T) + 2*r[6]*beti + r[6]^2 - r[2]^2 - r[4]^2
-        if _check_pz2(pz2)
-            return _nan_coords(T)
-        end
-        NormL = L / sqrt(pz2)
-        x_new = r[1] + NormL * r[2]
-        y_new = r[3] + NormL * r[4]
-        # Match JuTrack's in-place `+=` evaluation order. This avoids changing
-        # finite-difference maps through cancellation at substep boundaries.
-        z_new = r[5] - (NormL * (beti + r[6]) - L * beti)
-        return SVector(x_new, r[2], y_new, r[4], z_new, r[6])
-    else
-        # Linearized approximation: pz ≈ 1 + δ
-        NormL = L / (one(T) + r[6])
-        x_new = r[1] + NormL * r[2]
-        y_new = r[3] + NormL * r[4]
-        z_new = r[5] - NormL * (r[2]^2 + r[4]^2) / (2*(one(T) + r[6]))
-        return SVector(x_new, r[2], y_new, r[4], z_new, r[6])
+@inline drift6(r::SVector{6,S}, L::T, beti::T=one(T)) where {T<:Real,S} =
+    drift6(r, L, beti, Val(USE_EXACT_HAMILTONIAN))
+
+@inline function drift6(r::SVector{6,S}, L::T, beti::T, ::Val{true}) where {T<:Real,S}
+    # Exact longitudinal momentum for δE = (E-E0)/(P0*c).
+    pz2 = one(T) + 2*r[6]*beti + r[6]^2 - r[2]^2 - r[4]^2
+    if _check_pz2(pz2)
+        return _lost_coords(r, T)
     end
+    NormL = L / sqrt(pz2)
+    x_new = r[1] + NormL * r[2]
+    y_new = r[3] + NormL * r[4]
+    # Match JuTrack's in-place `+=` evaluation order. This avoids changing
+    # finite-difference maps through cancellation at substep boundaries.
+    z_new = r[5] - (NormL * (beti + r[6]) - L * beti)
+    return SVector(x_new, r[2], y_new, r[4], z_new, r[6])
+end
+
+@inline function drift6(r::SVector{6,S}, L::T, beti::T, ::Val{false}) where {T<:Real,S}
+    # Linearized approximation: pz ≈ 1 + δ
+    NormL = L / (one(T) + r[6])
+    x_new = r[1] + NormL * r[2]
+    y_new = r[3] + NormL * r[4]
+    z_new = r[5] - NormL * (r[2]^2 + r[4]^2) / (2*(one(T) + r[6]))
+    return SVector(x_new, r[2], y_new, r[4], z_new, r[6])
 end
 
 """
@@ -185,7 +216,7 @@ end
 
 Track particle through a Marker (no effect).
 """
-function pass!(elem::Marker, r::SVector{6,S}, beti::S=one(S)) where S
+function pass!(elem::Marker, r::SVector{6,S}, beti::Real=one(S)) where S
     return r
 end
 
@@ -218,7 +249,12 @@ Apply dipole edge focusing at entrance.
     
     fx = inv_rho * tan(edge_angle)
     
-    if method == 1
+    if iszero(fringecorr) && method != 2 && method != 3
+        # Brown model without a fringe-field integral: no momentum dependence,
+        # so skip evaluating tan on the (possibly TPSA) coordinates. Identical
+        # to the general branch for finite coordinates.
+        fy = fx
+    elseif method == 1
         fy = inv_rho * tan(edge_angle - fringecorr / (one(T) + r[6]))
     elseif method == 2
         fy = inv_rho * tan(edge_angle - fringecorr / (one(T) + r[6])) / (one(T) + r[6])
@@ -252,7 +288,12 @@ Same as entrance but with opposite sign for THOMX method px term.
     
     fx = inv_rho * tan(edge_angle)
     
-    if method == 1
+    if iszero(fringecorr) && method != 2 && method != 3
+        # Brown model without a fringe-field integral: no momentum dependence,
+        # so skip evaluating tan on the (possibly TPSA) coordinates. Identical
+        # to the general branch for finite coordinates.
+        fy = fx
+    elseif method == 1
         fy = inv_rho * tan(edge_angle - fringecorr / (one(T) + r[6]))
     elseif method == 2
         fy = inv_rho * tan(edge_angle - fringecorr / (one(T) + r[6])) / (one(T) + r[6])
@@ -439,13 +480,17 @@ longitudinal update carries the opposite sign of JuTrack's because TrackPad's
                                   edge::T,
                                   skip_b0::Int,
                                   beti::T) where {T<:Real,S}
-    FX = zero(T); FY = zero(T)
-    FX_X = zero(T); FX_Y = zero(T); FY_X = zero(T); FY_Y = zero(T)
+    # Accumulators are typed like the coordinates (not like the element
+    # parameters) so the loop below is type-stable when S != T. The multiply by
+    # zero is the only generic way to obtain a typed zero for TPSA coordinates.
+    z0 = zero(T) * r[1]
+    FX = z0; FY = z0
+    FX_X = z0; FX_Y = z0; FY_X = z0; FY_Y = z0
     RX = one(T); IX = zero(T)
     @inbounds for n in 0:max_order
         B = polynom_b[n + 1]
         A = polynom_a[n + 1]
-        j = n + 1.0
+        j = T(n + 1)
         DRX = RX
         DIX = IX
         RX = DRX * r[1] - DIX * r[3]
@@ -464,7 +509,7 @@ longitudinal update carries the opposite sign of JuTrack's because TrackPad's
             DV += B * DIX + A * DRX
         end
 
-        f1 = -edge / 4.0 / (j + 1.0)
+        f1 = -edge / (T(4) * (j + one(T)))
         U *= f1
         V *= f1
         DU *= f1
@@ -475,7 +520,7 @@ longitudinal update carries the opposite sign of JuTrack's because TrackPad's
         DUY = -j * DV
         DVY = j * DU
 
-        nf = (j + 2.0) / j
+        nf = (j + T(2)) / j
 
         FX += U * r[1] + nf * V * r[3]
         FY += U * r[3] - nf * V * r[1]
@@ -963,7 +1008,7 @@ Hard-edge bend fringe (Forest 13.13).
     
     py2z2 = (py2 + pz2)
     arg_sec = (b0 * gK * (pz4 + px2 * (py2 + 2*pz2))) / (pz2 * pz) - atan(px * pz / (py2 + pz2))
-    powsec = sec(arg_sec)^2
+    powsec = (one(T) / cos(arg_sec))^2   # sec² written so it also works on series types
     
     # Derivatives (simplified form matching JuTrack logic)
     # Note: These are complex derivatives. For TPSA matching we need exact form.
@@ -999,7 +1044,11 @@ Hard-edge bend fringe (Forest 13.13).
     dd = dd_num / denom
     
     # symplectic correction
-    yf = (2 * r[3]) / (1 + sqrt(1 - 2 * dpy * r[3]))
+    disc = 1 - 2 * dpy * r[3]
+    # A negative discriminant means the fringe map has no real solution at this
+    # amplitude; report the particle as lost instead of throwing a DomainError.
+    _check_pz2(disc) && return _lost_coords(r, T)
+    yf = (2 * r[3]) / (1 + sqrt(disc))
     dxf = 0.5 * dpx * yf^2
     dct = 0.5 * dd * yf^2
     dpyf = phi * yf
@@ -1022,7 +1071,7 @@ Ideal wedge map (Forest 12.41).
     c = cos(theta)
     s = sin(theta)
     pz = pxyz(momentum, r[2], r[4])
-    d2 = pxyz(momentum, 0.0, r[4])
+    d2 = pxyz(momentum, zero(T), r[4])
     
     px_new = r[2] * c + (pz - rhoinv * r[1]) * s
     
@@ -1072,7 +1121,7 @@ Exact bend body map (Forest 12.18).
         
         px_new = r[2] * cs + pzmx * sn
         
-        d2 = pxyz(momentum, 0.0, r[4])
+        d2 = pxyz(momentum, zero(T), r[4])
         val1 = r[2] / d2
         val2 = px_new / d2
         val1 = _safe_clamp(val1, -one(T), one(T))
@@ -1170,7 +1219,6 @@ end
 # Space-Charge Canonical Element Wrappers
 # =============================================================================
 
-@inline _nan6(::Type{T}) where T = SVector{6, T}(ntuple(_ -> T(NaN), 6))
 
 function pass!(elem::DriftSC{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     r = apply_misalignment(r, elem.t1)
@@ -1239,7 +1287,7 @@ function pass!(elem::SBendSC{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S
     end
 
     if iszero(elem.L)
-        return _nan6(T)
+        return _lost_coords(r, T)
     end
     irho = elem.angle / elem.L
     polynom_b = elem.polynom_b
@@ -1267,8 +1315,11 @@ end
 # Linear Bend (LBend)
 # =============================================================================
 
-@inline function _lbend_body(r::SVector{6,T}, L::T, grd::T, b_angle::T,
-                             by_error::T, beti::T) where T
+# The linear bend body branches on the sign of the momentum-dependent focusing
+# G1, G2, so it is defined for Real coordinate types only (Float32/64, Dual);
+# TPSA coordinates cannot flow through it.
+@inline function _lbend_body(r::SVector{6,S}, L::T, grd::T, b_angle::T,
+                             by_error::T, beti::T) where {T<:Real,S<:Real}
     if iszero(L)
         return r
     end
@@ -1281,10 +1332,13 @@ end
     G2 = -grd * p_norm
     tol = sqrt(eps(T))
 
-    MHD = one(T); M12 = L; M21 = zero(T)
-    MVD = one(T); M34 = L; M43 = zero(T)
-    arg1 = zero(T); arg2 = zero(T)
-    sqrtG1 = zero(T); sqrtG2 = zero(T)
+    # Matrix entries depend on the particle momentum: type them accordingly so
+    # the branches below do not change the variable types.
+    U = typeof(G1)
+    MHD = one(U); M12 = U(L); M21 = zero(U)
+    MVD = one(U); M34 = U(L); M43 = zero(U)
+    arg1 = zero(U); arg2 = zero(U)
+    sqrtG1 = zero(U); sqrtG2 = zero(U)
 
     if abs(G1) >= tol
         if G1 > zero(T)
@@ -1344,7 +1398,7 @@ end
     longitudinal_increment -= M34 * M43 * y * ypr / 2
     z_new = r[5] + momentum_jacobian * longitudinal_increment
 
-    return SVector{6, T}(x_new, px_new, y_new, py_new, z_new, r[6])
+    return SVector(x_new, px_new, y_new, py_new, z_new, r[6])
 end
 
 function pass!(elem::LBend{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
@@ -1354,7 +1408,7 @@ function pass!(elem::LBend{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     end
 
     if iszero(elem.L)
-        return _nan6(T)
+        return _lost_coords(r, T)
     end
     irho = elem.angle / elem.L
     r = edge_fringe_entrance(r, irho, elem.e1, elem.fint1, elem.full_gap, 1)
@@ -1380,8 +1434,8 @@ mirroring JuTrack's `check_lost_aperture`. `r_apertures =
 `e_apertures = [ax, ay, 0, 0, 0, 0]` an elliptical one with semi-axes
 `ax`, `ay`; all-zero vectors disable the respective check.
 """
-function outside_aperture(r::SVector{6,T}, r_apertures::AbstractVector{T},
-                          e_apertures::AbstractVector{T}) where T
+function outside_aperture(r::SVector{6,S}, r_apertures::AbstractVector{T},
+                          e_apertures::AbstractVector{T}) where {S,T}
     if !iszero(r_apertures)
         (r[1] < r_apertures[1] || r[1] > r_apertures[2] ||
          r[3] < r_apertures[3] || r[3] > r_apertures[4]) && return true
@@ -1404,6 +1458,17 @@ end
 @inline _apertures_active(rap, eap) =
     rap !== nothing && !(iszero(rap) && iszero(eap))
 
+"""
+    aperture_lost(r, rap, eap) -> Bool
+
+True when the element carries an active aperture and `r` lies outside it.
+Returns `false` for non-Real coordinate types (TPSA), where the ordered
+comparisons an aperture test needs are not defined.
+"""
+@inline aperture_lost(r::SVector{6,S}, rap, eap) where {S<:Real} =
+    _apertures_active(rap, eap) && outside_aperture(r, rap, eap)
+@inline aperture_lost(::SVector{6}, _rap, _eap) = false
+
 
 
 function pass!(elem::SpaceCharge{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
@@ -1412,118 +1477,62 @@ function pass!(elem::SpaceCharge{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T
     return r
 end
 
-@inline function _patch_y_rotation(
-    x::T,
-    px::T,
-    y::T,
-    py::T,
-    z::T,
-    delta::T,
-    beta_inverse::T,
-    reference_angle::T,
-) where T
-    angle = -reference_angle
-    iszero(angle) && return x, px, y, py, z, delta
+"""
+    _y_rotation(r, beti, angle) -> SVector{6}
+
+Rotate the reference frame about the vertical axis by `angle` (Forest 10.26 in
+the exact energy coordinates). Shared by `Patch` (pitches) and `YRotation`.
+Generic in the coordinate type: the loss branches use `_check_pz2`/`_check_tiny`
+so TPSA coordinates pass through unchanged.
+"""
+@inline function _y_rotation(r::SVector{6,S}, beti::T, angle::T) where {T<:Real,S}
+    iszero(angle) && return r
     cosine = cos(angle)
     sine = sin(angle)
     tangent = tan(angle)
-    pz_squared = one(T) + 2 * delta * beta_inverse + delta^2 - px^2 - py^2
-    if pz_squared <= zero(T)
-        nan = T(NaN)
-        return nan, nan, nan, nan, nan, nan
-    end
+    pz_squared = one(T) + 2 * r[6] * beti + r[6]^2 - r[2]^2 - r[4]^2
+    _check_pz2(pz_squared) && return _lost_coords(r, T)
     pz = sqrt(pz_squared)
-    denominator = one(T) - tangent * px / pz
-    if abs(denominator) < sqrt(eps(T))
-        nan = T(NaN)
-        return nan, nan, nan, nan, nan, nan
-    end
-    x_new = x / (cosine * denominator)
-    px_new = cosine * px + sine * pz
-    y_new = y + tangent * x * py / (pz * denominator)
-    z_new = z - tangent * x * (beta_inverse + delta) / (pz * denominator)
-    return x_new, px_new, y_new, py, z_new, delta
+    denominator = one(T) - tangent * r[2] / pz
+    _check_tiny(denominator, sqrt(eps(T))) && return _lost_coords(r, T)
+    x_new = r[1] / (cosine * denominator)
+    px_new = cosine * r[2] + sine * pz
+    y_new = r[3] + tangent * r[1] * r[4] / (pz * denominator)
+    z_new = r[5] - tangent * r[1] * (beti + r[6]) / (pz * denominator)
+    return SVector(x_new, px_new, y_new, r[4], z_new, r[6])
 end
 
-@inline function _patch_coordinates(
-    x::T,
-    px::T,
-    y::T,
-    py::T,
-    z::T,
-    delta::T,
-    beta_inverse::T,
-    x_offset::T,
-    y_offset::T,
-    z_offset::T,
-    x_pitch::T,
-    y_pitch::T,
-    tilt::T,
-    t_offset::T,
-) where T
-    pz_squared = one(T) + 2 * delta * beta_inverse + delta^2 - px^2 - py^2
-    if pz_squared <= zero(T)
-        nan = T(NaN)
-        return nan, nan, nan, nan, nan, nan
-    end
-    pz = sqrt(pz_squared)
-    x -= x_offset + z_offset * px / pz
-    y -= y_offset + z_offset * py / pz
-    z += z_offset * (beta_inverse + delta) / pz + T(C_LIGHT) * t_offset
-
-    if !iszero(x_pitch)
-        rotated_y, rotated_py, rotated_x, rotated_px, z, delta =
-            _patch_y_rotation(
-                y,
-                py,
-                x,
-                px,
-                z,
-                delta,
-                beta_inverse,
-                -x_pitch,
-            )
-        x, px, y, py = rotated_x, rotated_px, rotated_y, rotated_py
-    end
-    x, px, y, py, z, delta = _patch_y_rotation(
-        x,
-        px,
-        y,
-        py,
-        z,
-        delta,
-        beta_inverse,
-        y_pitch,
-    )
-
-    if !iszero(tilt)
-        cosine = cos(tilt)
-        sine = sin(tilt)
-        x, y = cosine * x + sine * y, -sine * x + cosine * y
-        px, py = cosine * px + sine * py, -sine * px + cosine * py
-    end
-    return x, px, y, py, z, delta
+"""Rotation about the horizontal axis, expressed through `_y_rotation` with x<->y swapped."""
+@inline function _x_rotation(r::SVector{6,S}, beti::T, angle::T) where {T<:Real,S}
+    swapped = SVector(r[3], r[4], r[1], r[2], r[5], r[6])
+    q = _y_rotation(swapped, beti, angle)
+    return SVector(q[3], q[4], q[1], q[2], q[5], q[6])
 end
 
 function pass!(patch::Patch{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
-    U = promote_type(T, S)
-    coordinates = _patch_coordinates(
-        U(r[1]),
-        U(r[2]),
-        U(r[3]),
-        U(r[4]),
-        U(r[5]),
-        U(r[6]),
-        U(beti),
-        U(patch.x_offset),
-        U(patch.y_offset),
-        U(patch.z_offset),
-        U(patch.x_pitch),
-        U(patch.y_pitch),
-        U(patch.tilt),
-        U(patch.t_offset),
-    )
-    return SVector{6,U}(coordinates)
+    pz_squared = one(T) + 2 * r[6] * beti + r[6]^2 - r[2]^2 - r[4]^2
+    _check_pz2(pz_squared) && return _lost_coords(r, T)
+    pz = sqrt(pz_squared)
+    x = r[1] - (patch.x_offset + patch.z_offset * r[2] / pz)
+    y = r[3] - (patch.y_offset + patch.z_offset * r[4] / pz)
+    z = r[5] + patch.z_offset * (beti + r[6]) / pz + T(C_LIGHT) * patch.t_offset
+    r = SVector(x, r[2], y, r[4], z, r[6])
+
+    if !iszero(patch.x_pitch)
+        r = _x_rotation(r, beti, patch.x_pitch)
+    end
+    r = _y_rotation(r, beti, -patch.y_pitch)
+
+    if !iszero(patch.tilt)
+        cosine = cos(patch.tilt)
+        sine = sin(patch.tilt)
+        x_t = cosine * r[1] + sine * r[3]
+        y_t = -sine * r[1] + cosine * r[3]
+        px_t = cosine * r[2] + sine * r[4]
+        py_t = -sine * r[2] + cosine * r[4]
+        r = SVector(x_t, px_t, y_t, py_t, r[5], r[6])
+    end
+    return r
 end
 
 function pass!(elem::Translation{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
@@ -1535,40 +1544,16 @@ function pass!(elem::Translation{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T
     # +/- ds*(1/beta + delta)/pz without compensation under its own
     # c(t-t0) axis; TrackPad deliberately uses the drift-consistent form.
     pz2 = one(T) + 2 * r[6] * beti + r[6]^2 - r[2]^2 - r[4]^2
-    if pz2 <= zero(T)
-        return _nan6(T)
-    end
+    _check_pz2(pz2) && return _lost_coords(r, T)
     norm_ds = elem.ds / sqrt(pz2)
     x_new = r[1] - elem.dx + norm_ds * r[2]
     y_new = r[3] - elem.dy + norm_ds * r[4]
     z_new = r[5] - (norm_ds * (beti + r[6]) - elem.ds * beti)
-    return SVector{6, T}(x_new, r[2], y_new, r[4], z_new, r[6])
+    return SVector(x_new, r[2], y_new, r[4], z_new, r[6])
 end
 
 function pass!(elem::YRotation{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
-    angle = -elem.angle
-    if iszero(angle)
-        return r
-    end
-    ca = cos(angle)
-    sa = sin(angle)
-    ta = tan(angle)
-
-    pz2 = one(T) + 2 * r[6] * beti + r[6]^2 - r[2]^2 - r[4]^2
-    if pz2 <= zero(T)
-        return _nan6(T)
-    end
-    pz = sqrt(pz2)
-    ptt = one(T) - ta * r[2] / pz
-    if abs(ptt) < sqrt(eps(T))
-        return _nan6(T)
-    end
-
-    x_new = r[1] / (ca * ptt)
-    px_new = ca * r[2] + sa * pz
-    y_new = r[3] + ta * r[1] * r[4] / (pz * ptt)
-    z_new = r[5] - ta * r[1] * (beti + r[6]) / (pz * ptt)
-    return SVector{6, T}(x_new, px_new, y_new, r[4], z_new, r[6])
+    return _y_rotation(r, beti, -elem.angle)
 end
 
 # =============================================================================
@@ -1580,12 +1565,12 @@ end
     return one(T) - x2 / 6 * (one(T) - x2 / 20 * (one(T) - x2 / 42 * (one(T) - x2 / 72)))
 end
 
-@inline function _wig_ax_axpy(elem::Wiggler{T,N,V}, r::SVector{6,T}, Zw::T, Aw::T, Po::T) where {T,N,V}
+@inline function _wig_ax_axpy(elem::Wiggler{T,N,V}, r::SVector{6,S}, Zw::T, Aw::T, Po::T) where {T,N,V,S}
     x = r[1]
     y = r[3]
     kw = T(2pi) / elem.lw
-    ax = zero(T)
-    axpy = zero(T)
+    ax = zero(T) * x   # typed like the coordinates
+    axpy = zero(T) * x   # typed like the coordinates
 
     @inbounds for i in 1:elem.NHharm
         if 6 * i > length(elem.By)
@@ -1632,12 +1617,12 @@ end
     return ax, axpy
 end
 
-@inline function _wig_ay_aypx(elem::Wiggler{T,N,V}, r::SVector{6,T}, Zw::T, Aw::T, Po::T) where {T,N,V}
+@inline function _wig_ay_aypx(elem::Wiggler{T,N,V}, r::SVector{6,S}, Zw::T, Aw::T, Po::T) where {T,N,V,S}
     x = r[1]
     y = r[3]
     kw = T(2pi) / elem.lw
-    ay = zero(T)
-    aypx = zero(T)
+    ay = zero(T) * x   # typed like the coordinates
+    aypx = zero(T) * x   # typed like the coordinates
 
     @inbounds for i in 1:elem.NHharm
         if 6 * i > length(elem.By)
@@ -1684,8 +1669,8 @@ end
     return ay, aypx
 end
 
-@inline function _wig_map_2nd(elem::Wiggler{T,N,V}, r::SVector{6,T}, dl::T,
-                              Zw::T, Aw::T, Po::T, beti::T) where {T,N,V}
+@inline function _wig_map_2nd(elem::Wiggler{T,N,V}, r::SVector{6,S}, dl::T,
+                              Zw::T, Aw::T, Po::T, beti::T) where {T,N,V,S}
     delta = r[6]
     momentum = _momentum_norm(delta, beti)
     inv_momentum = inv(momentum)
@@ -1701,41 +1686,41 @@ end
     py = r[4]
     z = r[5]
 
-    ay, aypx = _wig_ay_aypx(elem, SVector{6,T}(x, px, y, py, z, delta), Zw, Aw, Po)
+    ay, aypx = _wig_ay_aypx(elem, SVector(x, px, y, py, z, delta), Zw, Aw, Po)
     px -= aypx
     py -= ay
     y += dl2d * py
     z -= momentum_jacobian * (dl2d / 2) * py^2 * inv_momentum
 
-    ay, aypx = _wig_ay_aypx(elem, SVector{6,T}(x, px, y, py, z, delta), Zw, Aw, Po)
+    ay, aypx = _wig_ay_aypx(elem, SVector(x, px, y, py, z, delta), Zw, Aw, Po)
     px += aypx
     py += ay
 
-    ax, axpy = _wig_ax_axpy(elem, SVector{6,T}(x, px, y, py, z, delta), Zw, Aw, Po)
+    ax, axpy = _wig_ax_axpy(elem, SVector(x, px, y, py, z, delta), Zw, Aw, Po)
     px -= ax
     py -= axpy
     x += dld * px
     z -= momentum_jacobian * (dld / 2) * px^2 * inv_momentum
 
-    ax, axpy = _wig_ax_axpy(elem, SVector{6,T}(x, px, y, py, z, delta), Zw, Aw, Po)
+    ax, axpy = _wig_ax_axpy(elem, SVector(x, px, y, py, z, delta), Zw, Aw, Po)
     px += ax
     py += axpy
 
-    ay, aypx = _wig_ay_aypx(elem, SVector{6,T}(x, px, y, py, z, delta), Zw, Aw, Po)
+    ay, aypx = _wig_ay_aypx(elem, SVector(x, px, y, py, z, delta), Zw, Aw, Po)
     px -= aypx
     py -= ay
     y += dl2d * py
     z -= momentum_jacobian * (dl2d / 2) * py^2 * inv_momentum
 
-    ay, aypx = _wig_ay_aypx(elem, SVector{6,T}(x, px, y, py, z, delta), Zw, Aw, Po)
+    ay, aypx = _wig_ay_aypx(elem, SVector(x, px, y, py, z, delta), Zw, Aw, Po)
     px += aypx
     py += ay
     Zw += dl2
 
-    return SVector{6,T}(x, px, y, py, z, delta), Zw
+    return SVector(x, px, y, py, z, delta), Zw
 end
 
-@inline function _wig_pass_4th(elem::Wiggler{T,N,V}, r::SVector{6,T}, beti::T) where {T,N,V}
+@inline function _wig_pass_4th(elem::Wiggler{T,N,V}, r::SVector{6,S}, beti::T) where {T,N,V,S}
     PN = elem.Nsteps
     Nw = round(Int, elem.L / elem.lw)
     Nstep = PN * max(1, Nw)
@@ -1755,14 +1740,14 @@ end
     return r
 end
 
-@inline function _wig_B(elem::Wiggler{T,N,V}, r::SVector{6,T}, Zw::T) where {T,N,V}
+@inline function _wig_B(elem::Wiggler{T,N,V}, r::SVector{6,S}, Zw::T) where {T,N,V,S}
     x = r[1]
     y = r[3]
     kw = T(2pi) / elem.lw
     PB0 = elem.Bmax
-    Bxv = zero(T)
-    Byv = zero(T)
-    Bzv = zero(T)
+    Bxv = zero(T) * x   # typed like the coordinates
+    Byv = zero(T) * x   # typed like the coordinates
+    Bzv = zero(T) * x   # typed like the coordinates
 
     @inbounds for i in 1:elem.NHharm
         if 6 * i > length(elem.By)
@@ -1813,7 +1798,7 @@ end
     return Bxv, Byv, Bzv
 end
 
-@inline function _wig_radiation_kicks(r::SVector{6,T}, Bxv::T, Byv::T, Po::T, srCoef::T, dl::T) where T
+@inline function _wig_radiation_kicks(r::SVector{6,S}, Bxv, Byv, Po::T, srCoef::T, dl::T) where {T,S}
     B2 = Bxv^2 + Byv^2
     if iszero(B2)
         return r
@@ -1823,10 +1808,10 @@ end
     dFactor = (one(T) + r[6])^2
     dDelta = -srCoef * dFactor * irho2 * dl
     scale = one(T) + dDelta
-    return SVector{6,T}(r[1], r[2] * scale, r[3], r[4] * scale, r[5], r[6] + dDelta)
+    return SVector(r[1], r[2] * scale, r[3], r[4] * scale, r[5], r[6] + dDelta)
 end
 
-@inline function _wig_pass_4th_rad(elem::Wiggler{T,N,V}, r::SVector{6,T}, beti::T) where {T,N,V}
+@inline function _wig_pass_4th_rad(elem::Wiggler{T,N,V}, r::SVector{6,S}, beti::T) where {T,N,V,S}
     PN = elem.Nsteps
     Nw = round(Int, elem.L / elem.lw)
     Nstep = PN * max(1, Nw)
@@ -1842,10 +1827,10 @@ end
 
     ax, _ = _wig_ax_axpy(elem, r, Zw, Aw, Po)
     ay, _ = _wig_ay_aypx(elem, r, Zw, Aw, Po)
-    r = SVector{6,T}(r[1], r[2] - ax, r[3], r[4] - ay, r[5], r[6])
+    r = SVector(r[1], r[2] - ax, r[3], r[4] - ay, r[5], r[6])
     Bxv, Byv, _ = _wig_B(elem, r, Zw)
     r = _wig_radiation_kicks(r, Bxv, Byv, Po, srCoef, SL)
-    r = SVector{6,T}(r[1], r[2] + ax, r[3], r[4] + ay, r[5], r[6])
+    r = SVector(r[1], r[2] + ax, r[3], r[4] + ay, r[5], r[6])
 
     @inbounds for _ in 1:Nstep
         r, Zw = _wig_map_2nd(elem, r, dl1, Zw, Aw, Po, beti)
@@ -1854,10 +1839,10 @@ end
 
         ax, _ = _wig_ax_axpy(elem, r, Zw, Aw, Po)
         ay, _ = _wig_ay_aypx(elem, r, Zw, Aw, Po)
-        r = SVector{6,T}(r[1], r[2] - ax, r[3], r[4] - ay, r[5], r[6])
+        r = SVector(r[1], r[2] - ax, r[3], r[4] - ay, r[5], r[6])
         Bxv, Byv, _ = _wig_B(elem, r, Zw)
         r = _wig_radiation_kicks(r, Bxv, Byv, Po, srCoef, SL)
-        r = SVector{6,T}(r[1], r[2] + ax, r[3], r[4] + ay, r[5], r[6])
+        r = SVector(r[1], r[2] + ax, r[3], r[4] + ay, r[5], r[6])
     end
 
     return r
@@ -1897,7 +1882,7 @@ function pass!(elem::CrabCavity{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,
     kick = elem.charge * volt / p0c
     px_new = r[2] + kick * sin(ang)
     delta_new = r[6] - elem.k * kick * r[1] * cos(ang)
-    r = SVector{6, T}(r[1], px_new, r[3], r[4], r[5], delta_new)
+    r = SVector(r[1], px_new, r[3], r[4], r[5], delta_new)
     if elem.L > zero(T)
         r = drift6(r, elem.L / 2, beti)
     end
@@ -1908,7 +1893,7 @@ function pass!(elem::AccelCavity{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T
     p0c = max(_reference_p0c(elem.energy, beti), eps(T))
     sv = sin(-elem.k * r[5] + elem.phis) - sin(elem.phis)
     delta_new = r[6] + (elem.charge * elem.volt / p0c) * sv
-    return SVector{6, T}(r[1], r[2], r[3], r[4], r[5], delta_new)
+    return SVector(r[1], r[2], r[3], r[4], r[5], delta_new)
 end
 
 # =============================================================================
@@ -1925,7 +1910,7 @@ end
 @inline _rf_k(rf::CrabCavity{T,N}) where {T,N} = rf.k
 @inline _rf_k(::AbstractElement) = 0.0
 
-function pass!(elem::LongitudinalRFMap{T,E}, r::SVector{6,T}, beti::T=one(T)) where {T,E}
+function pass!(elem::LongitudinalRFMap{T,E}, r::SVector{6,S}, beti::T=one(T)) where {T,E,S}
     k = T(_rf_k(elem.rf))
     if abs(k) <= eps(T)
         return r
@@ -1934,7 +1919,7 @@ function pass!(elem::LongitudinalRFMap{T,E}, r::SVector{6,T}, beti::T=one(T)) wh
     beta = inv(beti)
     eta = elem.alphac - (one(T) - beta * beta)
     z_new = r[5] - (T(2pi) * h * eta * beti / k) * r[6]
-    return SVector{6, T}(r[1], r[2], r[3], r[4], z_new, r[6])
+    return SVector(r[1], r[2], r[3], r[4], z_new, r[6])
 end
 
 function pass!(elem::LorentzBoost{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
@@ -1944,7 +1929,7 @@ function pass!(elem::LorentzBoost{T,N}, r::SVector{6,S}, beti::T=one(T)) where {
     x_new = r[1] - elem.tanang * r[5]
     z_new = r[5] / elem.cosang
     delta_new = elem.tanang * elem.cosang * r[2] + elem.cosang * r[6]
-    return SVector{6, T}(x_new, r[2], r[3], r[4], z_new, delta_new)
+    return SVector(x_new, r[2], r[3], r[4], z_new, delta_new)
 end
 
 function pass!(elem::InvLorentzBoost{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
@@ -1953,44 +1938,215 @@ function pass!(elem::InvLorentzBoost{T,N}, r::SVector{6,S}, beti::T=one(T)) wher
     end
     x_new = r[1] + elem.sinang * r[5]
     delta_new = (r[6] - elem.sinang * r[2]) / elem.cosang
-    return SVector{6, T}(x_new, r[2], r[3], r[4], r[5] * elem.cosang, delta_new)
+    return SVector(x_new, r[2], r[3], r[4], r[5] * elem.cosang, delta_new)
 end
 
 # =============================================================================
-# Strong Beam-Beam (single-particle approximations)
+# Strong Beam-Beam
+#
+# Transverse field of a bi-Gaussian charge distribution, evaluated with the
+# Bassetti-Erskine formula through the Faddeeva function w(z) = exp(-z^2) erfc(-iz).
+# Everything here is plain arithmetic on real/complex numbers (no special-function
+# library calls), so the same code runs in the packed KernelAbstractions kernel.
 # =============================================================================
 
+"""
+    _weideman_coefficients(N) -> NTuple{N,Float64}
+
+Coefficients of Weideman's rational approximation to the Faddeeva function
+(J. A. C. Weideman, SIAM J. Numer. Anal. 31 (1994) 1497), computed once at load
+time by a direct DFT so no FFT dependency is needed.
+"""
+function _weideman_coefficients(N::Int)
+    M = 2N
+    M2 = 2M
+    L = sqrt(N / sqrt(2.0))
+    # Samples of f(theta) = exp(-t^2) (L^2 + t^2), t = L tan(theta/2), on the
+    # uniform grid theta_j = j*pi/M, j = 0..M2-1 (f(pi) = 0).
+    f = zeros(M2)
+    for j in 0:M2-1
+        theta = j * pi / M
+        theta > pi && (theta -= 2pi)
+        if abs(abs(theta) - pi) < 1e-12
+            f[j+1] = 0.0
+        else
+            t = L * tan(theta / 2)
+            f[j+1] = exp(-t^2) * (L^2 + t^2)
+        end
+    end
+    a = zeros(N)
+    for n in 1:N
+        acc = 0.0
+        for j in 0:M2-1
+            acc += f[j+1] * cos(2pi * n * j / M2)
+        end
+        a[n] = acc / M2
+    end
+    return ntuple(i -> a[i], N)
+end
+
+const _FADDEEVA_N = 48
+const _FADDEEVA_L = sqrt(_FADDEEVA_N / sqrt(2.0))
+const _FADDEEVA_A = _weideman_coefficients(_FADDEEVA_N)
+
+"""
+    faddeeva_w(z::Complex) -> Complex
+
+Faddeeva function `w(z) = exp(-z^2) * erfc(-i z)` for any complex `z`.
+Weideman's N=48 rational approximation in the upper half-plane (relative error
+~1e-14 in Float64), reflected to the lower half-plane with
+`w(z) = 2 exp(-z^2) - w(-z)`. Allocation-free and GPU-safe.
+"""
+@inline function faddeeva_w(z::Complex{T}) where {T<:Real}
+    if imag(z) < zero(T)
+        return 2 * exp(-z * z) - _faddeeva_upper(-z)
+    end
+    return _faddeeva_upper(z)
+end
+
+@inline function _faddeeva_upper(z::Complex{T}) where {T<:Real}
+    L = T(_FADDEEVA_L)
+    iz = im * z
+    d = L - iz
+    Z = (L + iz) / d
+    # p = sum_{n=1}^{N} a_n Z^(n-1), Horner from the highest degree.
+    p = Complex{T}(T(_FADDEEVA_A[_FADDEEVA_N]))
+    @inbounds for n in (_FADDEEVA_N - 1):-1:1
+        p = p * Z + T(_FADDEEVA_A[n])
+    end
+    return 2 * p / (d * d) + T(1 / sqrt(pi)) / d
+end
+
+"""
+    gaussian_beam_field(x, y, sigmax, sigmay) -> (Ex, Ey)
+
+Normalized transverse field of a bi-Gaussian charge distribution centred at the
+origin, at transverse offset `(x, y)`. Normalization: for a round beam
+`Ex = 2 x (1 - exp(-r^2/2sigma^2)) / r^2`, so the linear-regime focusing is
+`Ex ≈ x / sigma^2`. This is the same normalization as JuTrack's
+`Bassetti_Erskine!`: the kick on a particle of the weak beam is
+`Δpx = N r0 q_w q_s / γ_w * Ex`, with `N` the number of strong-beam particles,
+`r0` the classical radius of the weak-beam species, `q_w, q_s` the signed charges
+and `γ_w` the weak-beam Lorentz factor. Elliptical beams use Bassetti-Erskine;
+`sigmax == sigmay` (to 1e-10 relative) uses the closed round-beam form.
+"""
+@inline gaussian_beam_field(x::Real, y::Real, sigmax::Real, sigmay::Real) =
+    gaussian_beam_field(promote(x, y, sigmax, sigmay)...)
+
+@inline function gaussian_beam_field(x::T, y::T, sigmax::T, sigmay::T) where {T<:Real}
+    sx2 = sigmax * sigmax
+    sy2 = sigmay * sigmay
+    if abs(sx2 - sy2) <= T(1e-10) * (sx2 + sy2)
+        return _round_beam_field(x, y, (sx2 + sy2) / 2)
+    elseif sx2 > sy2
+        return _bassetti_erskine(x, y, sigmax, sigmay)
+    else
+        # x <-> y symmetry of the problem.
+        Ey, Ex = _bassetti_erskine(y, x, sigmay, sigmax)
+        return Ex, Ey
+    end
+end
+
+@inline function _round_beam_field(x::T, y::T, sigma2::T) where {T<:Real}
+    r2 = x * x + y * y
+    if r2 <= T(1e-30) * sigma2
+        # Linear limit 2 x (1 - e^{-u}) / r^2 -> x / sigma^2.
+        return x / sigma2, y / sigma2
+    end
+    g = -2 * expm1(-r2 / (2 * sigma2)) / r2
+    return g * x, g * y
+end
+
+"""
+    _round_beam_field_series(x, y, sigma2) -> (Ex, Ey)
+
+The round-beam field written as its everywhere-convergent power series in
+`u = r^2 / (2 sigma^2)`: `2 (1 - e^{-u}) / r^2 = (1/sigma^2) Σ_k (-u)^k / (k+1)!`.
+This form has no division by `r^2`, so it is the one used for series (TPSA)
+coordinates, whose reference orbit is usually on axis. 41 terms give full
+double precision for `u ≲ 12`, i.e. reference amplitudes below ~5 σ.
+"""
+# c[k+1] = (-1)^k / (k+1)!, k = 0..40
+const _ROUND_SERIES_C = ntuple(i -> Float64((-1)^(i - 1) // factorial(big(i))), 41)
+
+@inline function _round_beam_field_series(x, y, sigma2)
+    u = (x * x + y * y) / (2 * sigma2)
+    # Horner in u from the highest term.
+    g = _ROUND_SERIES_C[end] * u
+    @inbounds for k in (length(_ROUND_SERIES_C) - 1):-1:2
+        g = (g + _ROUND_SERIES_C[k]) * u
+    end
+    g = (g + _ROUND_SERIES_C[1]) / sigma2
+    return g * x, g * y
+end
+
+# Bassetti & Erskine, CERN-ISR-TH/80-06, for sigmax > sigmay. The formula holds
+# for y >= 0; y < 0 follows from Ey(x,-y) = -Ey(x,y), Ex(x,-y) = Ex(x,y).
+@inline function _bassetti_erskine(x::T, y::T, sigmax::T, sigmay::T) where {T<:Real}
+    if y < zero(T)
+        Ex, Ey = _bassetti_erskine(x, -y, sigmax, sigmay)
+        return Ex, -Ey
+    end
+    sx2 = sigmax * sigmax
+    sy2 = sigmay * sigmay
+    s = sqrt(2 * (sx2 - sy2))
+    z1 = Complex(x, y) / s
+    z2 = Complex(x * sigmay / sigmax, y * sigmax / sigmay) / s
+    expo = exp(-(x * x) / (2 * sx2) - (y * y) / (2 * sy2))
+    F = faddeeva_w(z1) - expo * faddeeva_w(z2)
+    # E_y + i E_x = C F  with C = 2 sqrt(pi) / s  (round limit: 2 (1-e^{-u}) / r)
+    C = 2 * T(sqrt(pi)) / s
+    return C * imag(F), C * real(F)
+end
+
+"""
+    pass!(elem::StrongThinGaussianBeam, r, beti)
+
+Thin strong-beam kick: `Δp = amplitude * gaussian_beam_field(x - xoffset, y - yoffset,
+rmssizex, rmssizey)`. `amplitude = N r0 q_w q_s / γ_w` (see
+[`beambeam_amplitude`](@ref)); positive for like charges, giving a defocusing
+kick. `zloc` is descriptive metadata of the strong slice and does not enter the
+thin kick; use [`StrongGaussianBeam`](@ref) for the synchro-beam mapping.
+"""
 function pass!(elem::StrongThinGaussianBeam{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
-    sx2 = max(elem.rmssizex^2, eps(T))
-    sy2 = max(elem.rmssizey^2, eps(T))
     dx = r[1] - elem.xoffset
     dy = r[3] - elem.yoffset
-    g = elem.amplitude * exp(-T(0.5) * (dx^2 / sx2 + dy^2 / sy2))
-    px_new = r[2] - g * dx / sx2
-    py_new = r[4] - g * dy / sy2
-    return SVector{6, T}(r[1], px_new, r[3], py_new, r[5], r[6])
+    Ex, Ey = gaussian_beam_field(dx, dy, elem.rmssizex, elem.rmssizey)
+    return SVector(r[1], r[2] + elem.amplitude * Ex, r[3], r[4] + elem.amplitude * Ey, r[5], r[6])
 end
 
+"""
+    pass!(elem::StrongGaussianBeam, r, beti)
+
+Synchro-beam mapping (Hirata, Moshammer & Ruggiero 1993) through the strong
+beam's longitudinal slices. Slice `i`, holding `zslice_npar[i]` particles at
+`zslice_center[i]` (positive toward the head of the strong bunch), collides
+with a weak particle of coordinate `z` at `s* = (z - zslice_center[i]) / 2`
+from the interaction point (TrackPad's `z` is positive for an early particle).
+The transverse coordinates are drifted to `s*`, kicked with
+`Δp = kick_scale * zslice_npar[i] * gaussian_beam_field(...)`, and drifted
+back with the kicked momenta, which keeps the transverse map symplectic. The
+beam size is taken constant along the slices (no hourglass), and the weak
+particle's energy is not updated, as in JuTrack.
+"""
 function pass!(elem::StrongGaussianBeam{T,N,V}, r::SVector{6,S}, beti::T=one(T)) where {T,N,V,S}
-    if elem.nzslice <= 0
-        return r
-    end
-    sx2 = max(elem.beamsize[1]^2, eps(T))
-    sy2 = max(elem.beamsize[2]^2, eps(T))
-    factor = elem.charge / max(abs(elem.total_energy), eps(T))
-    px = r[2]
-    py = r[4]
+    elem.nzslice <= 0 && return r
+    x = r[1]; px = r[2]; y = r[3]; py = r[4]
     @inbounds for i in 1:elem.nzslice
-        w = i <= length(elem.zslice_npar) ? elem.zslice_npar[i] : one(T) / T(elem.nzslice)
+        npar = i <= length(elem.zslice_npar) ? elem.zslice_npar[i] : T(elem.num_particle) / T(elem.nzslice)
+        zc = i <= length(elem.zslice_center) ? elem.zslice_center[i] : zero(T)
         xoff = i <= length(elem.xoffsets) ? elem.xoffsets[i] : zero(T)
         yoff = i <= length(elem.yoffsets) ? elem.yoffsets[i] : zero(T)
-        dx = r[1] - xoff
-        dy = r[3] - yoff
-        g = w * exp(-T(0.5) * (dx^2 / sx2 + dy^2 / sy2))
-        px -= factor * g * dx / sx2
-        py -= factor * g * dy / sy2
+        sstar = (r[5] - zc) / 2
+        xc = x + px * sstar
+        yc = y + py * sstar
+        Ex, Ey = gaussian_beam_field(xc - xoff, yc - yoff, elem.beamsize[1], elem.beamsize[2])
+        px = px + elem.kick_scale * npar * Ex
+        py = py + elem.kick_scale * npar * Ey
+        x = xc - px * sstar
+        y = yc - py * sstar
     end
-    return SVector{6, T}(r[1], px, r[3], py, r[5], r[6])
+    return SVector(x, px, y, py, r[5], r[6])
 end
 
 # =============================================================================

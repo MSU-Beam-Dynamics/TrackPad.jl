@@ -446,39 +446,85 @@ function _numerical_jacobian(f::Function, x::Vector{T}; h::T=T(1e-6)) where T
 end
 
 """
-    find_closed_orbit_6d(lat, beam; x0=zeros, tol=1e-10, maxiter=20, h=1e-6, reg=1e-12)
+    _newton_closed_orbit(f, x0, tol, maxiter, h, reg, strict, label) -> Vector
+
+Newton iteration on the fixed-point residual `f(x) - x` with finite-difference
+Jacobians. Returns the converged iterate.
+
+The final iterate is always re-tested: the loop updates `x` after evaluating
+the residual, so the value returned when the iteration limit is reached had
+never been checked. A non-converged result is an error rather than a silently
+returned vector, because an unconverged "orbit" (a ring with no fixed point
+returns whatever the last Newton step produced, often metres off) is
+indistinguishable downstream from a real closed orbit.
+"""
+function _newton_closed_orbit(f::Function, x0::Vector{T}, tol::T, maxiter::Int,
+                              h::T, reg::T, strict::Bool,
+                              label::AbstractString) where T
+    maxiter >= 1 || throw(ArgumentError("maxiter must be positive"))
+    tol > zero(T) || throw(ArgumentError("tol must be positive"))
+    x = copy(x0)
+    eye = Matrix{T}(I, length(x), length(x))
+
+    for _ in 1:maxiter
+        J, x_out = _numerical_jacobian(f, x; h=h)
+        Δ = x_out .- x
+        residual = norm(Δ)
+        if residual < tol
+            return x
+        end
+        Δx = (eye - J + reg * eye) \ Δ
+        all(isfinite, Δx) || break
+        x .+= Δx
+    end
+
+    residual = norm(f(x) .- x)
+    residual < tol && return x
+
+    message = "$label did not converge: |x_out - x| = $residual after " *
+              "$maxiter iterations (tol = $tol). The lattice may have no " *
+              "closed orbit, or the search needs a different starting point, " *
+              "a larger maxiter, or a looser tol. Pass strict=false to accept " *
+              "the last iterate."
+    strict && error(message)
+    @warn message
+    return x
+end
+
+"""
+    find_closed_orbit_6d(lat, beam; x0=zeros, tol=1e-10, maxiter=20, h=1e-6,
+                         reg=1e-12, strict=true)
 
 Find a 6-D closed orbit using Newton iterations with finite-difference Jacobians.
+
+Throws when the iteration does not reach `tol`; pass `strict=false` to warn and
+return the last iterate instead.
 """
 function find_closed_orbit_6d(lat::Lattice, beam::Beam{T};
                               x0::SVector{6,T}=zero(SVector{6,T}),
                               tol::T=T(1e-10),
                               maxiter::Int=20,
                               h::T=T(1e-6),
-                              reg::T=T(1e-12)) where T
+                              reg::T=T(1e-12),
+                              strict::Bool=true) where T
     _require_periodic(lat, "find_closed_orbit_6d")
-    x = collect(x0)
-    eye = Matrix{T}(I, 6, 6)
 
     f(θ::Vector{T}) = collect(linepass(lat, SVector{6,T}(θ...), beam))
 
-    for _ in 1:maxiter
-        J, x_out = _numerical_jacobian(f, x; h=h)
-        Δ = x_out .- x
-        if norm(Δ) < tol
-            return SVector{6,T}(x...)
-        end
-        Δx = (eye - J + reg * eye) \ Δ
-        x .+= Δx
-    end
+    x = _newton_closed_orbit(f, collect(x0), tol, maxiter, h, reg, strict,
+                             "find_closed_orbit_6d")
     return SVector{6,T}(x...)
 end
 
 """
-    find_closed_orbit_4d(lat, beam; dp=0, x0=zeros, tol=1e-10, maxiter=20, h=1e-6, reg=1e-12)
+    find_closed_orbit_4d(lat, beam; dp=0, x0=zeros, tol=1e-10, maxiter=20,
+                         h=1e-6, reg=1e-12, strict=true)
 
 Find a 4-D closed orbit `(x, px, y, py)` at fixed sixth-coordinate energy
 offset `dp = δE`. The keyword name is retained for compatibility.
+
+Throws when the iteration does not reach `tol`; pass `strict=false` to warn and
+return the last iterate instead.
 """
 function find_closed_orbit_4d(lat::Lattice, beam::Beam{T};
                               dp::T=zero(T),
@@ -486,10 +532,9 @@ function find_closed_orbit_4d(lat::Lattice, beam::Beam{T};
                               tol::T=T(1e-10),
                               maxiter::Int=20,
                               h::T=T(1e-6),
-                              reg::T=T(1e-12)) where T
+                              reg::T=T(1e-12),
+                              strict::Bool=true) where T
     _require_periodic(lat, "find_closed_orbit_4d")
-    x = collect(x0)
-    eye = Matrix{T}(I, 4, 4)
 
     function f(θ::Vector{T})
         rin = SVector{6,T}(θ[1], θ[2], θ[3], θ[4], zero(T), dp)
@@ -497,15 +542,8 @@ function find_closed_orbit_4d(lat::Lattice, beam::Beam{T};
         return T[rout[1], rout[2], rout[3], rout[4]]
     end
 
-    for _ in 1:maxiter
-        J, x_out = _numerical_jacobian(f, x; h=h)
-        Δ = x_out .- x
-        if norm(Δ) < tol
-            return SVector{4,T}(x...)
-        end
-        Δx = (eye - J + reg * eye) \ Δ
-        x .+= Δx
-    end
+    x = _newton_closed_orbit(f, collect(x0), tol, maxiter, h, reg, strict,
+                             "find_closed_orbit_4d")
     return SVector{4,T}(x...)
 end
 
@@ -527,7 +565,13 @@ function _element_jacobians(lat::Lattice, beam::Beam{T},
     s = zeros(T, n + 1)
     jacobians = Vector{Matrix{T}}(undef, n)
     r = reference
-    for (i, elem) in enumerate(lat.elements)
+    # Optics are evaluated at the same (time, turn) = (0, 0) that `linepass`
+    # uses by default; time-varying elements are resolved here so that a
+    # lattice containing `timed(...)` elements works in the Twiss/dispersion
+    # functions exactly as it does in tracking.
+    ctx = TimeContext(zero(T))
+    for (i, elem_raw) in enumerate(lat.elements)
+        elem = _resolve_for_time(elem_raw, ctx)
         s[i + 1] = s[i] + T(get_length(elem))
         jacobians[i] = _element_jacobian(elem, r, β_inv, h)
         r = pass!(elem, r, β_inv)

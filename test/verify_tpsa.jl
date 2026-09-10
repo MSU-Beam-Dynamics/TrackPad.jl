@@ -186,3 +186,47 @@ end
         end
     end
 end
+
+# ── Per-element TPSA vs finite-difference maps ───────────────────────────────
+# The linear part of the Taylor map must agree with the finite-difference
+# transfer map for every element type that has a TPSA path, including the
+# chromatic terms (dispersion, ∂py/∂δ) that only show up with a nonzero
+# fringe-field integral.
+
+const tpsa_elem_beam = Beam(3.0e9)
+
+function tpsa_vs_fd(elem; atol=1e-6)
+    lat = Lattice(AbstractElement[elem])
+    M_tpsa = tp_to_matrix(tpsa_map(lat, tpsa_elem_beam; order=1))
+    M_fd = transfer_map(lat, tpsa_elem_beam)
+    return maximum(abs, M_tpsa - M_fd) <= atol
+end
+
+@testset "TPSA linear maps match finite differences per element" begin
+    angle_val = 0.15
+    @test tpsa_vs_fd(SBend(0.9, angle_val; num_int_steps=10))
+    # Nonzero fringe integral and gap: the edge focusing depends on δ (Brown)
+    # and on δ twice (SOLEIL); the map must carry those derivatives.
+    @test tpsa_vs_fd(SBend(0.9, angle_val, angle_val/2, angle_val/2;
+                           fint1=0.5, fint2=0.5, gap=0.05, num_int_steps=10))
+    @test tpsa_vs_fd(SBend(0.9, angle_val, angle_val/2, angle_val/2;
+                           fint1=0.5, fint2=0.5, gap=0.05,
+                           fringe_bend_entrance=2, fringe_bend_exit=2, num_int_steps=10))
+    @test tpsa_vs_fd(SBend(0.9, angle_val, angle_val/2, angle_val/2;
+                           fint1=0.5, fint2=0.5, gap=0.05,
+                           fringe_bend_entrance=3, fringe_bend_exit=3, num_int_steps=10))
+    # Elements served by the generic core kernels.
+    @test tpsa_vs_fd(Marker())
+    @test tpsa_vs_fd(Patch(x_pitch=0.01, y_pitch=-0.02, tilt=0.1, z_offset=2e-3, t_offset=1e-12))
+    @test tpsa_vs_fd(Translation(0.0; dx=1.0e-3, dy=-2.0e-3, ds=3.0e-3))
+    @test tpsa_vs_fd(YRotation(0.0; angle=0.03))
+    @test tpsa_vs_fd(ExactSBend(0.9, angle_val, angle_val/2, angle_val/2;
+                                fringe_bend_entrance=0, fringe_bend_exit=0, num_int_steps=10))
+    @test tpsa_vs_fd(Solenoid(0.5, 0.8))
+    @test tpsa_vs_fd(Corrector(0.4, 1.5e-4, -2.2e-4))
+end
+
+@testset "TPSA rejects maps it cannot represent with a clear error" begin
+    @test_throws ArgumentError tpsa_map(Lattice(AbstractElement[ExactSBend(0.9, 0.15)]), tpsa_elem_beam)
+    @test_throws ArgumentError tpsa_map(Lattice(AbstractElement[LBend(0.9, 0.15)]), tpsa_elem_beam)
+end

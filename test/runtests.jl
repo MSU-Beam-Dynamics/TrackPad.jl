@@ -19,6 +19,8 @@ end
         include_isolated(:VerifyTimeDependence, "verify_time_dependence.jl")
         include_isolated(:VerifyEnzymeCompatibility, "verify_enzyme_compat.jl")
         include_isolated(:VerifyElements, "verify_elements.jl")
+        include_isolated(:VerifyReviewFixes, "verify_review_fixes.jl")
+        include_isolated(:VerifyBeamBeam, "verify_beambeam.jl")
         include_isolated(:VerifyGPU, "verify_gpu.jl")
         include_isolated(:VerifyIO, "verify_io.jl")
         include_isolated(:VerifyExamples, "verify_examples.jl")

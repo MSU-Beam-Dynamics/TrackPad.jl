@@ -50,10 +50,30 @@ const M_PROTON = 938.27208816e6     # eV (proton rest mass energy)
 Construct a beam with reference kinetic energy `energy` in eV. `mass` is the
 rest-mass energy in eV and `charge` is signed in units of elementary charge.
 """
-function Beam(energy::T; mass::T=T(M_ELECTRON), charge::T=T(-1.0)) where T
+function Beam(energy::T; mass::Real=T(M_ELECTRON), charge::Real=T(-1.0)) where T
+    mass = T(mass)
+    charge = T(charge)
     gamma = (energy + mass) / mass
     beta = sqrt(one(T) - one(T) / gamma^2)
     return Beam{T}(energy, mass, charge, gamma, beta)
+end
+
+"""
+    classical_radius(beam::Beam) -> r0 [m]
+
+Classical radius of the beam's particle species.
+"""
+classical_radius(beam::Beam) = classical_radius(beam.mass, beam.charge)
+
+"""
+    beambeam_amplitude(weak::Beam, num_particle, strong_charge) -> amplitude
+
+`amplitude = N r0_w q_w q_s / γ_w` for [`StrongThinGaussianBeam`](@ref): the kick
+felt by the weak (tracked) beam `weak` from `num_particle` strong-beam
+particles of charge `strong_charge` (units of `e`). Positive for like charges.
+"""
+function beambeam_amplitude(weak::Beam, num_particle::Real, strong_charge::Real)
+    return num_particle * classical_radius(weak) * weak.charge * strong_charge / weak.gamma
 end
 
 """
@@ -268,6 +288,18 @@ function refine_lattice(lat::Lattice;
 end
 
 """
+    _resolved_elements(lat, ctx)
+
+Element vector with every time-varying element materialized at `ctx`. Returns
+`lat.elements` itself when the lattice is static, so the common case allocates
+nothing.
+"""
+function _resolved_elements(lat::Lattice, ctx::TimeContext)
+    any(e -> e isa TimeVaryingElement, lat.elements) || return lat.elements
+    return [_resolve_for_time(elem, ctx) for elem in lat.elements]
+end
+
+"""
     total_length(lat::Lattice; time=0.0, turn=0)
 
 Return the total length of the lattice.
@@ -347,10 +379,13 @@ Track a single particle through the lattice (immutable version).
 - `beam`: Beam parameters
 
 # Returns
-- Final 6D coordinates after tracking
+- Final 6D coordinates after tracking, or `NaN` coordinates when the particle
+  is lost on an element aperture (set `check_apertures=false` to track through
+  apertures as if they were absent).
 """
 function linepass(lat::Lattice, r::SVector{6,S}, beam::Beam{T};
-                  time::Real=zero(T), turn::Integer=0) where {T,S}
+                  time::Real=zero(T), turn::Integer=0,
+                  check_apertures::Bool=true) where {T,S}
     β_inv = beti(beam)
     ctx = TimeContext(T(time); turn=turn)
     for elem in lat.elements
@@ -358,6 +393,17 @@ function linepass(lat::Lattice, r::SVector{6,S}, beam::Beam{T};
         r = pass!(elem_now, r, β_inv)
         if check_lost(r)
             return r  # Return immediately if particle is lost
+        end
+        if check_apertures
+            rap, eap = _elem_apertures(elem_now)
+            if aperture_lost(r, rap, eap)
+                # Single-particle tracking carries no lost flag, so an aperture
+                # loss is reported as NaN coordinates: without this the particle
+                # kept being tracked through the rest of the lattice and the
+                # caller saw a finite, plausible-looking result. `linepass!`
+                # keeps the evolved coordinates because it has a flag to set.
+                return _lost_coords(r, eltype(rap))
+            end
         end
     end
     return r
@@ -368,9 +414,10 @@ end
 
 Track a single particle through the lattice using default beam (1 GeV electron).
 """
-function linepass(lat::Lattice, r::SVector{6,S}; time::Real=zero(Float64), turn::Integer=0) where S
+function linepass(lat::Lattice, r::SVector{6,S}; time::Real=zero(Float64), turn::Integer=0,
+                  check_apertures::Bool=true) where S
     beam = Beam(1.0e9)
-    return linepass(lat, r, beam; time=time, turn=turn)
+    return linepass(lat, r, beam; time=time, turn=turn, check_apertures=check_apertures)
 end
 
 """
@@ -388,14 +435,15 @@ Track a single particle for multiple turns through a ring lattice.
 - Final coordinates after all turns
 """
 function ringpass(lat::Lattice, r::SVector{6,S}, beam::Beam{T}, nturns::Int;
-                  time::Real=zero(T), dt_turn::Real=zero(T), turn::Integer=0) where {T,S}
+                  time::Real=zero(T), dt_turn::Real=zero(T), turn::Integer=0,
+                  check_apertures::Bool=true) where {T,S}
     _require_periodic(lat, "ringpass")
     nturns >= 0 || throw(ArgumentError("nturns must be nonnegative"))
     t = T(time)
     dt = T(dt_turn)
     trn = Int(turn)
     for _ in 1:nturns
-        r = linepass(lat, r, beam; time=t, turn=trn)
+        r = linepass(lat, r, beam; time=t, turn=trn, check_apertures=check_apertures)
         if check_lost(r)
             return r
         end

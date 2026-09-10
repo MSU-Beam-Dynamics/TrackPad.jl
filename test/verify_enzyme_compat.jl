@@ -5,10 +5,14 @@ using StaticArrays
 using Enzyme
 
 @testset "TrackPad Enzyme Compatibility" begin
-    # Enzyme currently handles the linearized branch more robustly than the
-    # exact-Hamiltonian sqrt-domain path.
-    old_exact = TrackPad.USE_EXACT_HAMILTONIAN
-    TrackPad.USE_EXACT_HAMILTONIAN = false
+    # `USE_EXACT_HAMILTONIAN` is a compile-time constant (default true); the
+    # loss branches of the kernels are typed like their regular return, so the
+    # exact-Hamiltonian drift is differentiated directly. JuTrack is put on the
+    # same convention for the finite-difference references.
+    old_h = JuTrack.use_exact_Hamiltonian
+    old_b = JuTrack.use_exact_beti
+    JuTrack.use_exact_Hamiltonian = TrackPad.USE_EXACT_HAMILTONIAN ? 1 : 0
+    JuTrack.use_exact_beti = TrackPad.USE_EXACT_HAMILTONIAN ? 1 : 0
 
     function enzyme_fwd_derivative(f::Function, x::Float64)
         mode = Enzyme.set_runtime_activity(Enzyme.Forward)
@@ -95,7 +99,8 @@ using Enzyme
         ratio = abs(grad_time / fd_time_jt)
         @test 0.2 <= ratio <= 2.0
     finally
-        TrackPad.USE_EXACT_HAMILTONIAN = old_exact
+        JuTrack.use_exact_Hamiltonian = old_h
+        JuTrack.use_exact_beti = old_b
     end
 end
 

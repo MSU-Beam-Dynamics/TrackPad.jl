@@ -175,8 +175,10 @@ ps = ParamSweepLattice(gl, [(qf_idx, 2, k1_vals)])
 | `Quadrupole` | 2 | `k1` |
 | `Sextupole` | 2 | `k2` |
 | `Octupole` | 2 | `k3` |
-| `SBend` | 2 | `angle` (rad) |
-| `SBend` | 8 | `irho` = `angle/L` (precomputed) |
+| `SBend` | 2 | `angle` (rad) — the curvature `angle/L` is derived in the kernel, so slot 8 must not be swept |
+| `StrongThinGaussianBeam` | 2 | `amplitude` = `N r0 q_w q_s / γ_w` |
+| `StrongThinGaussianBeam` | 3, 4 | `rmssizex`, `rmssizey` (m) |
+| `StrongThinGaussianBeam` | 5, 6 | `xoffset`, `yoffset` (m) |
 | `RFCavity` | 2 | `volt` (eV) |
 | `RFCavity` | 3 | `freq` (Hz) |
 | `RFCavity` | 4 | `lag` (m) |
@@ -419,7 +421,7 @@ than peak dedicated-node results.
 
 | Feature | Status |
 |---------|--------|
-| Supported elements | `Marker`, `Patch`, `Drift`, `Quadrupole`, `Sextupole`, `Octupole`, `SBend`, `RFCavity`, `Corrector`, `Solenoid`, `ThinMultipole` |
+| Supported elements | `Marker`, `Patch`, `Drift`, `Quadrupole`, `Sextupole`, `Octupole`, `SBend`, `RFCavity`, `Corrector`, `Solenoid`, `ThinMultipole`, `StrongThinGaussianBeam` |
 | `ExactSBend` / `LBend` on GPU | Rejected with `ArgumentError` |
 | TPSA power-series tracking on GPU | Not yet implemented |
 | Space charge / `BeamBeam` / `Wake` / `Wiggler` | Rejected with `ArgumentError` |

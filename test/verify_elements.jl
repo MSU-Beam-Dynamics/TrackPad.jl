@@ -234,10 +234,8 @@ end
             @test wakefieldfunc_RLCWake(tp_rlc, t) ≈
                   JuTrack.wakefieldfunc_RLCWake(jt_rlc, t) rtol = 1.0e-15
         end
-        tp_sgb = StrongGaussianBeam(0.0, TrackPad.M_ELECTRON, 1.0, 1_000_000, ENERGY_VAL, [1e-3, 1.2e-3]; nzslice = 3)
-        jt_op = JuTrack.optics4DUC(1.0, 0.0, 1.0, 0.0)
-        jt_sgb = JuTrack.StrongGaussianBeam(0.0, JuTrack.m_e, 1.0, 1_000_000, ENERGY_VAL, jt_op, [1e-3, 1.2e-3], 3)
-        _assert_parity("StrongGaussianBeam", tp_sgb, jt_sgb)
+        # StrongGaussianBeam is not compared with JuTrack: JuTrack's beam-beam
+        # code is a placeholder. See test/verify_beambeam.jl.
     finally
         JuTrack.use_exact_beti = old_exact_beti
     end
@@ -594,5 +592,6 @@ end
 
 @testset "Element Gaps" begin
     @test_skip false # JuTrack has no Float64 pass! for LongitudinalWake.
-    @test_skip false # JuTrack has no Float64 pass! for StrongThinGaussianBeam.
+    # StrongThinGaussianBeam / StrongGaussianBeam are verified from first
+    # principles in test/verify_beambeam.jl; JuTrack's beam-beam is a placeholder.
 end

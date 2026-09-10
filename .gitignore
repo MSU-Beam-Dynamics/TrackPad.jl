@@ -30,3 +30,6 @@ scripts/
 .idea/
 *.swp
 *~
+
+# Local Linux Julia toolchain for sandboxed test runs (see .toolchain/README.md)
+.toolchain/
