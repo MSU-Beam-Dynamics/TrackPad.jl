@@ -151,3 +151,33 @@ end
     @test isapprox(sampled.betax[1], sampled.betax[end]; atol=1e-11)
     @test isapprox(sampled.betay[1], sampled.betay[end]; atol=1e-11)
 end
+
+# A section header whose title equals a docstring name in the same page gives
+# two headings with the same slug, and Documenter then refuses to resolve any
+# `[`Name`](@ref)` written on that page (newer versions make it a hard error).
+# Duplicate section titles within a page are ambiguous the same way.
+@testset "Documentation headings have unambiguous slugs" begin
+    docs_src = joinpath(@__DIR__, "..", "docs", "src")
+    for file in sort(filter(f -> endswith(f, ".md"), readdir(docs_src)))
+        text = read(joinpath(docs_src, file), String)
+        # names listed in @docs blocks become headings with the binding's slug
+        documented = Set{String}()
+        for block in eachmatch(r"```@docs\n(.*?)```"s, text)
+            for line in split(block.captures[1], '\n')
+                name = strip(first(split(line, '(')))
+                isempty(name) || push!(documented, name)
+            end
+        end
+        # section titles, ignoring fenced code (where `#` starts a comment)
+        headings = String[]
+        for line in eachmatch(r"^#+\s+(.+?)\s*$"m, replace(text, r"```.*?```"s => ""))
+            push!(headings, String(line.captures[1]))
+        end
+        for h in headings
+            @test !(h in documented) ||
+                  "$file: section `$h` collides with the docstring of the same name" == ""
+            @test count(==(h), headings) == 1 ||
+                  "$file: section `$h` appears more than once" == ""
+        end
+    end
+end

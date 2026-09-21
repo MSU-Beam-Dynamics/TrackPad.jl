@@ -26,7 +26,7 @@ reject an open line.
 
 ## PALS
 
-### Reading
+### Reading PALS
 
 ```julia
 lat, beam = read_pals(
@@ -108,7 +108,7 @@ alignment, radiation, or advanced-element field.
 
 ## MAD-X
 
-### Reading
+### Reading MAD-X
 
 ```julia
 lat, beam = read_madx("model.madx"; sequence="ring")

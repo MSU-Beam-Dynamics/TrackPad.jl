@@ -39,7 +39,7 @@ generated code:
 Drift
 ```
 
-## Marker
+## Marker Element
 
 ```@docs
 Marker
@@ -53,13 +53,13 @@ Patch
 
 `Patch` is an active zero-length reference-frame transformation, not a marker.
 
-## Quadrupole
+## Quadrupole Magnet
 
 ```@docs
 Quadrupole
 ```
 
-### Key Parameters
+### Quadrupole Key Parameters
 
 | Parameter | Description |
 |-----------|-------------|
@@ -112,13 +112,13 @@ map distortion rather than a growth. Importers (`read_madx`, `read_pals`) leave
 `num_int_steps` at `nothing` by default, which keeps these per-type values; pass
 an explicit number to force one count on every thick magnet.
 
-## Sextupole
+## Sextupole Magnet
 
 ```@docs
 Sextupole
 ```
 
-## Octupole
+## Octupole Magnet
 
 ```@docs
 Octupole
@@ -154,7 +154,7 @@ LBend
 RFCavity
 ```
 
-### Key Parameters
+### RF Cavity Key Parameters
 
 | Parameter | Description |
 |-----------|-------------|
@@ -166,7 +166,7 @@ RFCavity
 | `energy` | reference total energy [eV] (`beam.energy`) |
 | `charge` | reference-particle charge in units of elementary charge |
 
-## Corrector
+## Orbit Corrector
 
 ```@docs
 Corrector
@@ -174,7 +174,7 @@ HKicker
 VKicker
 ```
 
-## Solenoid
+## Solenoid Magnet
 
 ```@docs
 Solenoid
@@ -299,7 +299,7 @@ wakefieldfunc
 physical_wake_scale
 ```
 
-## Wiggler
+## Wiggler Magnet
 
 ```@docs
 Wiggler

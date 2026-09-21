@@ -8,7 +8,7 @@ CurrentModule = TrackPad
 TrackPad
 ```
 
-## Beam
+## Reference Beam
 
 ```@docs
 Beam
@@ -47,7 +47,7 @@ AbstractTransverseMap
 AbstractLongitudinalRFMap
 ```
 
-## Lattice
+## Lattice Assembly
 
 ```@docs
 Lattice
