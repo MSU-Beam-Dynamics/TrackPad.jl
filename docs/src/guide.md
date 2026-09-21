@@ -81,9 +81,9 @@ fodo = Lattice(
 ```
 
 `Lattice(elements)` is an open line by default. Set `periodic=true` only when
-the end point is physically the same reference point as the start. Multi-turn
-tracking, tune, chromaticity, periodic Twiss, and closed-orbit APIs reject open
-lines.
+the end point is physically the same reference point as the start: multi-turn
+tracking, `gettune`, `getchrom`, the periodic solution of [`twiss`](@ref) and
+the closed-orbit searches all reject an open line.
 
 Standard collection operations in Julia work directly:
 
@@ -94,8 +94,9 @@ fodo[2]           # Drift element
 
 ## Single-Particle Tracking
 
-[`linepass`](@ref) is the scalar tracking interface and returns a new
-`SVector{6}`:
+[`track`](@ref) is the tracking entry point — one particle or a bunch, one
+pass or many turns, serial, threaded or on a GPU. Given an `SVector{6}` it
+returns a new one:
 
 ```julia
 using TrackPad, StaticArrays
@@ -110,10 +111,9 @@ r1 = track(fodo, r0, beam)
 r100 = track(fodo, r0, beam; nturns=100)
 ```
 
-[`track`](@ref) is the one entry point for tracking: one particle or a bunch,
-one pass or many turns, serial, threaded or on a GPU. `nturns > 1` requires a
-periodic lattice. `linepass(fodo, r0, beam)` is the single-pass
-JuTrack-compatible spelling of the first call.
+`nturns > 1` requires a periodic lattice; a single pass works for a line or a
+ring. `linepass(fodo, r0, beam)` is the JuTrack-compatible spelling of the
+first call.
 
 ### Lost Particles
 
@@ -229,219 +229,183 @@ r_out = pass!(qf, r0, β_inv)
 
 ## Linear Optics
 
-All linear-optics routines live in `src/optics.jl` and use finite-difference
-Jacobians.
+[`twiss`](@ref) is the one entry point. It finds the closed orbit, solves (or
+propagates) the linear optics, and returns a single [`TwissResult`](@ref)
+holding the Twiss functions, the dispersion, the momentum compaction and the
+chromaticity — all from the same set of transfer maps, so they are guaranteed
+to describe the same machine. Rings and open lines differ only by whether you
+supply entrance optics.
 
-### Tunes
-
-```julia
-qx, qy = gettune(fodo, beam)
-```
-
-Returns fractional tunes in ``[0, 1)`` from the 4×4 transverse block of the
-one-turn map.
-
-### Chromaticity
+### The ring in one call
 
 ```julia
-ξx, ξy = getchrom(ring, beam)                 # dQ/dδ_P about the off-momentum closed orbit
-ξx, ξy = getchrom(ring, beam; wrt=:deltae)    # same quantity, differentiated with respect to δ_E
-ξx, ξy = getchrom(ring, beam; method=:fd)     # finite differences of tracking instead of the Taylor map
+tw = twiss(ring, beam)          # ≡ periodic_twiss(ring, beam)
+
+tw.tunex, tw.tuney              # fractional tunes
+maximum(tw.betax)               # peak β_x [m]
+tw.chromx, tw.chromy            # ξ = dQ/dδ_P about the off-momentum closed orbit
+tw.alphac, transition_gamma(tw) # momentum compaction and γ_tr
+tw.dx[1], tw.dpx[1]             # dispersion at the start [m], [–]
 ```
 
-`getchrom` returns ``\xi=\mathrm{d}Q/\mathrm{d}\delta_P`` with
-``\delta_P=(P-P_0)/P_0``; its `dp`/`dpp` are offsets and steps in the same
-variable. Pass `wrt=:deltae` to differentiate with respect to the stored
-coordinate instead (see [Conventions](@ref conventions) for which quantities
-use which).
-
-The chromaticity is always measured about the **off-momentum closed orbit**:
-for every momentum step the 4-D closed orbit is re-solved, so each sextupole is
-sampled at ``x = D\,\delta_P``, where its feed-down gradient ``k_2 D\,\delta_P``
-is exactly the sextupole chromaticity correction. 
-
-By default (`method=:tpsa`) the order-2 one-turn Taylor map about the closed
-orbit is differentiated analytically, including the closed-orbit term
-``\sum_k D_k\,\partial Q/\partial x_k``; there is no step to choose. With
-`method=:fd` the tunes are differentiated by finite differences of tracking
-(`dpp=1e-6` centered by default; the noise floor is about ``10^{-6}``
-absolute); the two agree to the truncation error of the finite difference.
-
-### Dispersion
-
-```julia
-tw = periodic_twiss(ring, beam)
-tw.dx, tw.dpx, tw.dy, tw.dpy        # at every element boundary, along tw.s
-```
-
-`tw.dx` is ``\mathrm{d}x/\mathrm{d}\delta_P`` along the closed orbit, the
-standard dispersion, which is what makes the textbook feed-down relation
-``\Delta\xi_x=\tfrac{1}{4\pi}\oint\beta_x k_2 D\,\mathrm{d}s`` hold with
-the ``\xi`` that `getchrom` returns. Pass `wrt=:deltae` for
-``\mathrm{d}x/\mathrm{d}\delta_E``. There is no separate dispersion
-function: the dispersion is part of the periodic optics and comes from the same
-Jacobians as the Twiss functions.
-
-### Twiss: rings and lines
-
-One function, [`twiss`](@ref), serves both cases and returns the same
-[`TwissResult`](@ref). Without an `entrance` it finds the closed orbit of a
-periodic lattice, solves the periodic condition and propagates it through each
-element — the complete linear and first-order chromatic description of the
-ring; with an `entrance` it propagates the supplied optics through the lattice
-(an open line, or a single pass through a ring). [`periodic_twiss`](@ref) and
-[`transport_twiss`](@ref) are the same function with the case spelled out.
-
-```julia
-tw = twiss(ring, beam)             # ≡ periodic_twiss(ring, beam)
-
-println("Qx = ", tw.tunex, "  Qy = ", tw.tuney)
-println("max βx = ", maximum(tw.betax), " m")
-println("ξ = (", tw.chromx, ", ", tw.chromy, ")")
-println("αc = ", tw.alphac, "  γ_tr = ", transition_gamma(tw))
-```
+Array fields are sampled at every element boundary and share the `s` grid, so
+they plot directly against `tw.s`:
 
 | Field | Description |
 |-------|-------------|
-| `periodic` | `true` for the periodic solution of a ring, `false` for propagated entrance optics |
-| `method` | `:tpsa` (default) or `:fd` |
 | `s` | longitudinal positions [m] |
 | `betax`, `betay` | β-functions [m] |
 | `alphax`, `alphay` | α-functions |
 | `mux`, `muy` | accumulated betatron phase [rad] |
-| `tunex`, `tuney` | fractional tunes of a ring; total phase advance / 2π of a line |
 | `dx`, `dpx`, `dy`, `dpy` | dispersion ``\mathrm{d}(x,p_x,y,p_y)/\mathrm{d}\delta_P`` [m, –] |
+
+and the scalars describe the lattice as a whole:
+
+| Field | Description |
+|-------|-------------|
+| `tunex`, `tuney` | fractional tunes of a ring; total phase advance / 2π of a line |
 | `length` | path length [m] (the circumference of a ring) |
-| `alphac` | momentum compaction ``(1/C)\,\mathrm{d}C/\mathrm{d}\delta_P`` (ring; `nothing` for a line) |
-| `slip` | slip factor ``\eta = \alpha_c - 1/\gamma_0^2`` (ring) |
-| `chromx`, `chromy` | chromaticity ``\mathrm{d}Q/\mathrm{d}\delta_P`` about the closed orbit (ring) |
-| `chrom2x`, `chrom2y` | ``\delta_P^2`` coefficient of ``Q(\delta_P)`` with `second_order=true` (ring) |
-| `radiation` | `(I1, I2, I3, I4, I5)` synchrotron-radiation integrals with `radiation_integrals=true` |
-| `detuning` | 2×2 ``\partial Q_i/\partial J_j`` [1/(m·rad)] with `detuning=true` (ring) |
+| `alphac` | momentum compaction ``(1/C)\,\mathrm{d}C/\mathrm{d}\delta_P`` |
+| `slip` | slip factor ``\eta=\alpha_c-1/\gamma_0^2`` ([`transition_gamma`](@ref) derives γ_tr) |
+| `chromx`, `chromy` | chromaticity ``\mathrm{d}Q/\mathrm{d}\delta_P`` about the closed orbit |
+| `chrom2x`, `chrom2y` | ``\delta_P^2`` coefficient of ``Q(\delta_P)`` (opt-in) |
+| `radiation` | `(I1, I2, I3, I4, I5)` synchrotron-radiation integrals (opt-in) |
+| `detuning` | 2×2 ``\partial Q_i/\partial J_j`` [1/(m·rad)] (opt-in) |
+| `periodic` | `true` for a ring's periodic solution, `false` for propagated optics |
+| `method` | how the maps were obtained: `:tpsa` (default) or `:fd` |
 
-Fields that were not requested, or that a line does not have, are `nothing`.
+A field that was not requested, or that an open line does not have, is
+`nothing` — so `tw.alphac === nothing` is how you ask "was this a line?".
 
-The optional fields are filled on request, because each costs extra tracking
-or a higher-order map:
+### Quantities you ask for
+
+Three quantities cost a higher-order map or extra tracking, so they are opt-in
+and `nothing` otherwise:
 
 ```julia
-tw = periodic_twiss(
+tw = twiss(
     ring, beam;
-    second_order        = true,   # chrom2x, chrom2y = ½ d²Q/dδ_P²  (3-point stencil, dpp2=1e-4)
-    radiation_integrals = true,   # I1…I5 over the bend bodies with the periodic dispersion
-    detuning            = true,   # ∂Q/∂J from 1024 turns at four actions + NAFF tune
+    second_order        = true,   # chrom2x, chrom2y = ½ d²Q/dδ_P²
+    radiation_integrals = true,   # I1…I5 over the bend bodies
+    detuning            = true,   # ∂Q/∂J, the amplitude-dependent tune shift
 )
+
+tw.chrom2x                        # ½ d²Qx/dδ_P²
 tw.radiation.I2                   # 2π/ρ for a ring of identical bends
 tw.detuning[1, 1]                 # ∂Qx/∂Jx
 ```
 
-By default every quantity comes from truncated Taylor maps (`method=:tpsa`):
-the closed orbit and the transfer matrices from an order-1 map, the
-chromaticities from the order-2 map, and the amplitude detuning from the
-order-3 map, with no step sizes to choose. `method=:fd` obtains the same
-quantities from finite differences of tracking, which is also the route for lattices containing an element without a series
-map (`LBend`). See [Performance](@ref performance_guide) for timings.
+`second_order` and `detuning` need a periodic lattice; `radiation_integrals`
+works for a line as well. See [Performance](@ref performance_guide) for what
+each one costs.
 
-#### Sampling inside elements
+### Open lines, and chaining sections
 
-By default, values are returned at the element boundaries. For smooth curves
-and local extrema inside thick elements, oversample without touching the
-lattice:
+An open line has no periodic solution, so give `twiss` the entrance optics —
+β and α of both planes, optionally the phases and the dispersion
+``(\eta,\eta')`` in the same ``\delta_P`` convention as the result:
 
 ```julia
-tw = twiss(ring, beam; slices = 10)       # ≥ 10 points in every drift, magnet and bend
-tw = twiss(ring, beam; max_step = 0.10)   # pieces no longer than 10 cm (uniform in s)
-tw = twiss(ring, beam; sample_integrator_steps = true)   # one point per configured step
+line     = Lattice(AbstractElement[qf, d, qd])
+entrance = optics4DUC(12.0, -0.4, 8.0, 0.2)                  # β, α only
+entrance = optics4DUC(optics2D(12.0, -0.4, 0.0, 0.5, 0.02),  # + phase, η, η′
+                      optics2D( 8.0,  0.2, 0.0, 0.0, 0.0))
+
+tw = twiss(line, beam; entrance = entrance)   # ≡ transport_twiss(line, beam, entrance)
 ```
 
-The three combine (the largest count per element wins). Each piece integrates
-in one step, so sampling never integrates an element in fewer steps than
-configured; asking for more pieces than steps refines its integration, which
-moves the numbers by the integrator error of the coarse lattice (about
-``10^{-4}`` for the default step counts — see [Performance](@ref
-performance_guide)) towards the converged values. Bend curvature and body
-multipoles are distributed over the pieces; entrance pole-face, fringe, offset
-and rotation maps sit on the first piece, exit maps on the last.
-[`refine_lattice`](@ref) exposes the sampled lattice itself when
-element-to-sample correspondence is needed.
-
-The `wrt=:deltae` keyword switches every momentum derivative in the result —
-dispersion, `alphac`, `slip`, chromaticities — to the stored ``\delta_E``.
-
-The older `twissline(ring, beam)` spelling remains compatible. The `twissring`
-overloads are JuTrack-style interfaces taking a momentum offset ``\delta_P`` and
-a map order (`wrt=:deltae` switches the offset to the stored coordinate).
-
-### Lattice Illustration
-
-After loading a Makie backend, draw a lattice strip on its own axis and link it
-to any longitudinal plot:
+The result is the same `TwissResult`, with the ring-only fields `nothing` and
+`tunex`/`tuney` reporting the total phase advance over 2π. A `TwissResult`
+itself works as an `entrance`, continuing from its exit values (phases and
+dispersion included), so sections chain:
 
 ```julia
-using CairoMakie, TrackPad
-
-fig = Figure()
-ax_lattice = Axis(fig[1, 1])
-ax_twiss = Axis(fig[2, 1], xlabel="s [m]", ylabel="beta [m]")
-plot_lattice!(ax_lattice, fodo)
-lines!(ax_twiss, tw.s, tw.betax)
-linkxaxes!(ax_lattice, ax_twiss)
+t_arc  = twiss(arc,  beam; entrance = t_injector)
+t_next = twiss(next, beam; entrance = t_arc)
 ```
 
-`lattice_plot_data(fodo)` provides the same glyph positions and element classes
-without requiring Makie. This is useful for other plotting backends. Physical
-element boundaries remain in `s_start` and `s_end`; zero-length BPMs, kickers,
-and cavities receive a small visible `plot_start` to `plot_end` width.
+For a line, `reference` is the launch coordinate rather than a closed-orbit
+seed; its sixth entry is the momentum at which the optics are evaluated.
 
-### Open-Line Twiss
+### Smooth curves: sampling inside elements
 
-An open line has no periodic solution, so supply the entrance optics — β and α
-of both planes, optionally the phases and the horizontal dispersion
-``(\eta, \eta')`` in the same ``\delta_P`` convention as the result:
+By default one point is returned per element boundary. To resolve the β-beat
+inside a long quadrupole or to plot a smooth dispersion, oversample — the
+lattice itself is untouched:
 
 ```julia
-line = Lattice(AbstractElement[qf, d, qd])
-entrance = optics4DUC(12.0, -0.4, 8.0, 0.2)                       # β, α only
-entrance = optics4DUC(optics2D(12.0, -0.4, 0.0, 0.5, 0.02),       # + phase, η, η′
-                      optics2D(8.0, 0.2, 0.0, 0.0, 0.0))
-tw = transport_twiss(line, beam, entrance)                        # ≡ twiss(line, beam; entrance)
+tw = twiss(ring, beam; slices = 10)                     # ≥ 10 points per element
+tw = twiss(ring, beam; max_step = 0.10)                 # pieces ≤ 10 cm, uniform in s
+tw = twiss(ring, beam; sample_integrator_steps = true)  # one point per integration step
 ```
 
-The result is the same [`TwissResult`](@ref) as for a ring: β, α, phases,
-dispersion propagated from the entrance, `tunex`/`tuney` as the total phase
-advance over 2π, and `radiation_integrals=true` works. The ring-only fields
-(`alphac`, `slip`, chromaticities, `detuning`) are `nothing`, and asking for
-`second_order` or `detuning` is an error. Lines chain: passing a `TwissResult`
-as the entrance continues from its exit values, phases included,
+The three combine, and the largest count per element wins. Each piece
+integrates in one step, so sampling never uses fewer steps than the element was
+configured with; asking for more pieces than steps *refines* the integration,
+which moves the numbers by the integrator error of the coarse lattice (about
+``10^{-4}`` in the tune at the default step counts) towards their converged
+values. Bend curvature and body multipoles are distributed over the pieces;
+entrance pole-face, fringe, offset and rotation maps stay on the first piece and
+their exit counterparts on the last. [`refine_lattice`](@ref) returns the
+sampled lattice itself when you need element-to-sample correspondence.
+
+### How the derivatives are taken
 
 ```julia
-t1 = twiss(arc,  beam; entrance = tw_injector)
-t2 = twiss(next, beam; entrance = t1)
+tw = twiss(ring, beam; method = :fd)      # finite differences of tracking
+tw = twiss(ring, beam; wrt = :deltae)     # derivatives w.r.t. the stored δ_E
 ```
 
-and `reference` is the launch coordinate (its sixth entry the momentum), not a
-closed-orbit seed.
+`method = :tpsa` (the default) reads every derivative off a truncated Taylor
+map about the closed orbit: the orbit and the transfer matrices from an order-1
+map, the chromaticity from order 2, the amplitude detuning from order 3. There
+are no step sizes and no noise floor. `method = :fd` differentiates tracking
+instead; it is the route for a lattice holding an element with no series map
+(`LBend`), and it is somewhat faster for the linear quantities.
 
-### Closed Orbit
+`wrt` selects the momentum variable for *every* derivative in the result —
+dispersion, `alphac`, `slip` and the chromaticities. The default
+``\delta_P=(P-P_0)/P_0`` is what MAD-X, elegant and AT report; `:deltae`
+switches to TrackPad's stored ``\delta_E`` (see [Conventions](@ref
+conventions)).
+
+### [Tunes and chromaticity on their own](@id chromaticity)
+
+When the full optics are not needed:
 
 ```julia
-co = find_closed_orbit_6d(fodo, beam)   # full 6D Newton search
-co = find_closed_orbit_4d(fodo, beam; dp = 1e-3)  # 4D at fixed δ_P = 1e-3
+qx, qy = gettune(ring, beam)     # fractional tunes from the 4×4 one-turn block
+ξx, ξy = getchrom(ring, beam)    # dQ/dδ_P, identical to tw.chromx, tw.chromy
 ```
 
-### One-Turn Map
+Both take the same `method` and `wrt` keywords. The chromaticity is always
+measured about the **off-momentum closed orbit**: the 4-D closed orbit is
+re-solved at each momentum, so every sextupole is sampled at ``x=D\,\delta_P``
+and its feed-down gradient ``k_2D\,\delta_P`` — the sextupole chromaticity
+correction — is included by construction. This is what makes the textbook
+relation ``\Delta\xi_x=\tfrac{1}{4\pi}\oint\beta_x k_2 D\,\mathrm{d}s`` hold
+with the ``D`` in `tw.dx`.
+
+### Closed orbit
 
 ```julia
-M = one_turn_map(fodo, beam)   # 6×6 finite-difference Jacobian
+co = find_closed_orbit_6d(ring, beam)              # full 6-D Newton search
+co = find_closed_orbit_4d(ring, beam; dp = 1e-3)   # 4-D at fixed δ_P = 1e-3
 ```
 
-For an open line, use the same finite-difference machinery without a closure
-assumption:
+### Transfer maps
 
 ```julia
-line = Lattice(AbstractElement[qf, d, qd])
-Mline = transfer_map(line, beam)
+M     = one_turn_map(ring, beam)                   # 6×6 Jacobian of one turn
+Mline = transfer_map(Lattice(AbstractElement[qf, d, qd]), beam)   # any ordered path
 ```
+
+### JuTrack-style entry points
+
+`twissline(ring, beam)` is the historic spelling of `periodic_twiss`. The
+`twissring`, `findm66` and `fastfindm66` overloads take a momentum offset
+``\delta_P`` and a map order, and return JuTrack-shaped results; `wrt=:deltae`
+switches the offset to the stored coordinate.
 
 ## TPSA Transfer Maps
 
@@ -484,35 +448,138 @@ directly.
 
 ## Time-Dependent Parameters
 
-Elements can be made time-varying with [`timed`](@ref):
+Any field of any element can be made a function of time and turn number, which
+covers ramps, modulation, and kickers that fire on a chosen turn.
+[`timed`](@ref) wraps an element and the fields that should vary:
 
 ```julia
 using TrackPad
 
-# Quadrupole whose k1 ramps linearly with turn number
-k1_ramp(ctx) = 1.2 * (1 + 0.01 * ctx.turn)
-qf_tv = timed(qf; k1=k1_ramp)
+t, nturn = Time(), Turn()
 
-# Build a lattice with the time-varying element
-ring_tv = Lattice([qf_tv, d, qd, d]; periodic=true)
-
-# Snapshot at turn 50 → plain Quadrupole with k1 = 1.2 * 1.50
-lat50 = materialize_lattice(ring_tv; turn = 50)
+qf_ramp = timed(qf; k1 = 1.8 * (1 + 0.01 * nturn))        # 1 % per turn
+sx_mod  = timed(sx; k2 = 3.0 + 0.2 * sin(2π * 60 * t))    # 60 Hz ripple
 ```
+
+### The evaluation context
+
+Every tracking and optics call resolves these fields through a
+[`TimeContext`](@ref), which carries both a physical time and a turn index:
+
+```julia
+TimeContext(real_time; turn = 0)
+```
+
+[`Time`](@ref) and [`Turn`](@ref) are symbolic stand-ins for its two fields.
+They support ordinary arithmetic and the usual math functions (`sin`, `exp`,
+`sqrt`, …), so an expression built from them *is* the parameter — no closure
+needed. Where an expression is not enough — a conditional, a table lookup, or a
+vector-valued field — pass a function of the context instead:
+
+```julia
+# an injection kicker that fires on turn 3 only
+kicker = timed(Corrector(0.0, 0.0, 0.0);
+               xkick = ctx -> ctx.turn == 3 ? 1.0e-4 : 0.0)
+
+# a whole multipole vector at once
+ramped = timed(sx; polynom_b = ctx -> SVector(0.0, 0.0, 2.0 * ctx.turn, 0.0))
+```
+
+`timed` checks the field names against the element type, so a typo throws
+immediately rather than being silently ignored.
+
+### When it is evaluated
+
+Tracking resolves the lattice **once per turn**, at
+`(time + (n-1) * dt_turn, turn + n - 1)` for the `n`-th turn, so a multi-turn
+call steps both the clock and the turn counter:
+
+```julia
+r = track(ring, r0, beam; nturns = 100, time = 0.0, dt_turn = 1e-6, turn = 0)
+```
+
+`track!` takes the same three keywords, and the turn index advances even when
+`dt_turn` is zero — which is what makes `Turn()` useful on its own.
+
+Optics functions evaluate at `(0, 0)`, because the Twiss parameters of a
+machine that is changing are only defined for a frozen snapshot. Take the
+snapshot yourself when you want the optics at another moment:
+
+```julia
+lat50 = materialize_lattice(ring_tv; time = 0.0, turn = 50)   # plain elements
+tw50  = twiss(lat50, beam)
+```
+
+[`materialize`](@ref) does the same for a single element, which is the quickest
+way to check that a ramp does what you think:
+
+```julia
+materialize(qf_ramp, TimeContext(0.0; turn = 50)).k1   # 1.8 * 1.5
+```
+
+!!! warning "Time-varying elements stay on the CPU"
+    A `TimeVaryingElement` holds host closures, so it cannot be packed into a
+    [`GPULattice`](@ref) or expanded into a Taylor map. Call
+    `materialize_lattice` for the time and turn you want first, then adapt or
+    expand the resulting static lattice.
 
 See [API Reference — Time Dependence](@ref time_dependence) for the full API.
 
-!!! warning "GPU materialization"
-    `TimeVaryingElement` stores host closures. Call `materialize_lattice` for a
-    specific time/turn before constructing a `GPULattice`.
-
 ## Lattice Utilities
 
+### Geometry and lookup
+
 ```julia
-total_length(fodo)            # total arc length [m]
-spos(fodo)                    # s-positions at each element boundary
-findelem(fodo, :QF)           # indices of elements named :QF
+length(ring)             # number of elements
+ring[2]                  # the second element
+isperiodic(ring)         # was it built with periodic=true?
+total_length(ring)       # total arc length [m]
+spos(ring)               # s at every element boundary [m] (length(ring) + 1 values)
+get_length(ring[2])      # arc length of one element [m]
+findelem(ring, :QF)      # indices of every element named :QF
 ```
+
+`findelem` returns indices into the lattice, which is what the element-index
+arguments of [`ParamSweepLattice`](@ref) and the `refpts` interfaces expect.
+
+### Derived lattices
+
+Elements are immutable, so these return a *new* lattice rather than modifying
+one:
+
+```julia
+refine_lattice(ring; slices = 10)                  # split elements for sampling
+materialize_lattice(ring_tv; time = 0.0, turn = 5) # freeze time-varying elements
+GPULattice(ring, beam)                             # pack for the CPU/GPU kernels
+```
+
+[`refine_lattice`](@ref) takes the same `slices`, `max_step` and
+`sample_integrator_steps` keywords as [`twiss`](@ref), and is what that function
+uses internally.
+
+### Drawing the lattice
+
+After loading a Makie backend, draw a lattice strip on its own axis and link it
+to any longitudinal plot:
+
+```julia
+using CairoMakie, TrackPad
+
+fig      = Figure()
+ax_lat   = Axis(fig[1, 1])
+ax_twiss = Axis(fig[2, 1], xlabel = "s [m]", ylabel = "β [m]")
+
+plot_lattice!(ax_lat, ring)
+lines!(ax_twiss, tw.s, tw.betax)
+lines!(ax_twiss, tw.s, tw.betay)
+linkxaxes!(ax_lat, ax_twiss)
+```
+
+[`lattice_plot_data`](@ref) returns the same glyph positions and element classes
+without requiring Makie, for any other plotting backend. Physical element
+boundaries are in `s_start` and `s_end`; zero-length BPMs, kickers and cavities
+are given a small visible `plot_start` to `plot_end` width so that they can
+still be seen.
 
 ## Common Failure Modes
 
@@ -522,7 +589,7 @@ findelem(fodo, :QF)           # indices of elements named :QF
 | RF cavity produces no kick | Direct cavity has `energy=0` | Set `energy=beam.energy` and `charge=beam.charge` |
 | GPU packing throws `ArgumentError` | Element or setting is unsupported | Keep that model on CPU or implement/test exact GPU support; do not remove physics silently |
 | `JuTrack`/`PolySeries` missing in tests | `test/runtests.jl` was run directly | Use `julia --project=. -e 'using Pkg; Pkg.test()'` |
-| Cross-code chromaticity differs | Convention/step/reference mismatch | Record `h`, `dpp`, centered mode, closed-orbit mode, RF state, and bend geometry |
+| Cross-code chromaticity differs | Convention or bend-model mismatch | Record `wrt`, `method` (and `dpp` for `:fd`), the RF state, and the bend model — see [Bend models](@ref bend_models) |
 | Metal type error | Metal does not support `Float64` kernels | Use `Float32` on Metal or `Float64` CPU/CUDA |
 
 ## Next Steps

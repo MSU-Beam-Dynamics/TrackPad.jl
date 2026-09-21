@@ -132,7 +132,7 @@ what `read_madx`/`read_pals` construct and what matches pyAT bit for bit.
 fringe, the model behind PTC, MAD-X `twiss` and Xsuite's `'full'` edges. The
 two agree on the linear optics but differ on the chromaticity by a few percent
 when the bending radius is a few tens of metres; see
-[Bend models and what other codes compute](@ref) before comparing
+[Bend models and what other codes compute](@ref bend_models) before comparing
 chromaticities with another code.
 
 ```@docs

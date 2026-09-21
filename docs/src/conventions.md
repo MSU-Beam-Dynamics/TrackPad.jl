@@ -134,7 +134,7 @@ singular values of ``\sqrt{\Sigma}J\sqrt{\Sigma}``.
 The maps below fix the physics that every tracking path — scalar CPU, packed
 GPU, TPSA and AD — implements identically.
 
-### Exact drift
+### [Exact drift](@id exact_drift)
 
 For a straight element, define the normalized longitudinal mechanical momentum
 
@@ -427,7 +427,7 @@ For `SBend(L, angle, e1, e2)`:
 ``e_1=e_2=\theta/2``. Importers convert chord/rectangular geometry to
 TrackPad's arc-length representation before construction.
 
-### Bend models and what other codes compute
+### [Bend models and what other codes compute](@id bend_models)
 
 `SBend` is AT's `BndMPoleSymplectic4Pass`: the Hamiltonian expanded to second
 order in the transverse coordinates, so the body has no ``(1+hx)`` factor on
@@ -561,7 +561,8 @@ A TPSA map is always computed as if the apertures were absent.
 - `getchrom` returns ``\mathrm{d}Q/\mathrm{d}\delta_P`` about the off-momentum
   closed orbit, which is the chromaticity of the ring; there is no on-axis
   option, because with sextupoles present the on-axis trajectory does not
-  measure a well-defined quantity — see [Chromaticity](@ref) in the guide. The
+  measure a well-defined quantity — see [Tunes and chromaticity](@ref chromaticity)
+  in the guide. The
   finite difference is centered by default (`centered=false` for one-sided).
 - Momentum compaction is defined through the closed-orbit path length,
   ``\alpha_c=(1/C)\,\mathrm{d}C/\mathrm{d}\delta_P``, and the slip factor is
@@ -651,7 +652,7 @@ compare the two codes apply the corresponding transformations explicitly.
   JuTrack's ultrarelativistic ``\delta_E\simeq\delta_P`` maps are recovered
   only in that limit.
 - **Roundoff.** The drift ``z`` update and the exact-bend ``x`` update are
-  evaluated without cancelling ``O(1)`` terms (see [Exact drift](@ref)); JuTrack's
+  evaluated without cancelling ``O(1)`` terms (see [Exact drift](@ref exact_drift)); JuTrack's
   literal forms leave ``\sim\varepsilon L`` and ``\sim\varepsilon/h`` per
   step. Parity tests therefore compare to JuTrack's roundoff
   (``10^{-14}``–``10^{-13}``), not to the bit.
