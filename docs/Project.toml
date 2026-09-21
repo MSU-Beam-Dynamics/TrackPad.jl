@@ -1,11 +1,17 @@
 [deps]
+PolySeries = "6f3fcde8-8165-4326-91a7-f7698485e8a3"
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 TrackPad = "e7bec244-bd43-46ed-8fec-7dc091d24617"
 
+# PolySeries is unregistered; TrackPad depends on it.
+[sources]
+PolySeries = {url = "https://github.com/MSU-Beam-Dynamics/PolySeries.jl"}
+
 [compat]
+PolySeries = "0.1"
 Documenter = "1"
-julia = "1.10"
+julia = "1.12"
 
 # To set up this docs environment for the first time, run:
 #   julia --project=docs/ -e 'using Pkg; Pkg.develop(PackageSpec(path="."))'

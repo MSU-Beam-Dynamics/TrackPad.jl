@@ -28,7 +28,7 @@ particles_initial = [
 function _track_tp(elem; energy::Float64 = ENERGY_VAL, particles = particles_initial)
     coords = copy(particles)
     lost_flags = zeros(Int, size(coords, 1))
-    linepass!(coords, Lattice([elem]), Beam(energy), lost_flags)
+    linepass!(coords, Lattice([elem]), jutrack_beam(energy), lost_flags)
     return coords
 end
 
@@ -38,15 +38,22 @@ function _track_jt(elem; energy::Float64 = ENERGY_VAL, particles = particles_ini
     return flip_longitudinal_coordinate(beam.r)
 end
 
-function _assert_parity(name::AbstractString, tp_elem, jt_elem; energy::Float64 = ENERGY_VAL, particles = particles_initial, current::Float64 = 0.0)
+# JuTrack's exact-bend body evaluates x_new = (pz_new − pzmx·cos + px·sin − 1)/h
+# directly, which cancels O(1) terms and leaves ~ε/h ≈ 1e-15 m of roundoff per
+# step; TrackPad's `exact_bend_body` is algebraically identical but
+# cancellation-free, so the two agree only to JuTrack's roundoff.
+const EXACT_BEND_ATOL = 1e-13
+
+function _assert_parity(name::AbstractString, tp_elem, jt_elem; energy::Float64 = ENERGY_VAL, particles = particles_initial, current::Float64 = 0.0,
+                        atol::Float64 = PARITY_ATOL)
     tp = _track_tp(tp_elem; energy = energy, particles = particles)
     jt = _track_jt(jt_elem; energy = energy, particles = particles, current = current)
     diff_norm = norm(tp - jt)
     diff_max = maximum(abs.(tp - jt))
     @testset "$name" begin
-        @test diff_norm < PARITY_ATOL
-        @test diff_max < PARITY_ATOL
-        @test isapprox(tp, jt, atol = PARITY_ATOL)
+        @test diff_norm < atol
+        @test diff_max < atol
+        @test isapprox(tp, jt, atol = atol)
     end
 end
 
@@ -67,8 +74,8 @@ end
         )
         _assert_parity("SBend", SBend(0.9, 0.15, 0.03, 0.02; num_int_steps = 10), JuTrack.SBEND(len = 0.9, angle = 0.15, e1 = 0.03, e2 = 0.02, NumIntSteps = 10))
         _assert_parity("RBend", RBend(0.9, 0.15; num_int_steps = 10), JuTrack.RBEND(len = 0.9, angle = 0.15, NumIntSteps = 10))
-        _assert_parity("ExactSBend", ExactSBend(0.9, 0.15, 0.03, 0.02; num_int_steps = 10), JuTrack.ESBEND(len = 0.9, angle = 0.15, e1 = 0.03, e2 = 0.02, NumIntSteps = 10))
-        _assert_parity("ERBend", ERBend(0.9, 0.15; num_int_steps = 10), JuTrack.ERBEND(len = 0.9, angle = 0.15, NumIntSteps = 10))
+        _assert_parity("ExactSBend", ExactSBend(0.9, 0.15, 0.03, 0.02; num_int_steps = 10), JuTrack.ESBEND(len = 0.9, angle = 0.15, e1 = 0.03, e2 = 0.02, NumIntSteps = 10); atol = EXACT_BEND_ATOL)
+        _assert_parity("ERBend", ERBend(0.9, 0.15; num_int_steps = 10), JuTrack.ERBEND(len = 0.9, angle = 0.15, NumIntSteps = 10); atol = EXACT_BEND_ATOL)
 
         # RF/cavity and related maps.
         _assert_parity(
@@ -113,13 +120,13 @@ end
         # invariant is asserted here (see conventions.md).
         @testset "Translation drift consistency" begin
             ds = 3.0e-3
-            beam_tb = Beam(ENERGY_VAL)
+            beam_tb = jutrack_beam(ENERGY_VAL)
             coords_t = copy(particles_initial)
             lost_t = zeros(Int, size(coords_t, 1))
             linepass!(coords_t, Lattice([Translation(0.0; dx = 1.0e-3, dy = -2.0e-3, ds = ds)]),
                       beam_tb, lost_t)
             coords_d = copy(particles_initial)
-            linepass!(coords_d, Lattice([Drift(ds)]), Beam(ENERGY_VAL), zeros(Int, size(coords_d, 1)))
+            linepass!(coords_d, Lattice([Drift(ds)]), jutrack_beam(ENERGY_VAL), zeros(Int, size(coords_d, 1)))
             # Remove the lateral origin offsets analytically: x -= dx, y -= dy.
             shifted = copy(coords_d)
             shifted[:, 1] .-= 1.0e-3
@@ -187,7 +194,8 @@ end
                        fringe_quad_entrance = 1, fringe_quad_exit = 1),
             JuTrack.ESBEND(len = 0.9, angle = 0.15, e1 = 0.03, e2 = 0.02,
                            NumIntSteps = 10, FringeQuadEntrance = 1,
-                           FringeQuadExit = 1),
+                           FringeQuadExit = 1);
+            atol = EXACT_BEND_ATOL,
         )
         _assert_parity(
             "Sextupole kick angle with fringes",
@@ -210,10 +218,10 @@ end
 
         # Space-charge canonical family.
         _assert_parity("DriftSC", DriftSC(0.5; a = 0.01, b = 0.02, Nl = 12, Nm = 14, Nsteps = 2), JuTrack.DRIFT_SC(len = 0.5, a = 0.01, b = 0.02, Nl = 12, Nm = 14, Nsteps = 2))
-        _assert_parity("QuadrupoleSC", QuadrupoleSC(0.4; k1 = 0.0, a = 0.01, b = 0.02), JuTrack.KQUAD_SC(len = 0.4, k1 = 0.0, a = 0.01, b = 0.02))
-        _assert_parity("SextupoleSC", SextupoleSC(0.3; k2 = 2.4, a = 0.01, b = 0.02), JuTrack.KSEXT_SC(len = 0.3, k2 = 2.4, a = 0.01, b = 0.02))
-        _assert_parity("OctupoleSC", OctupoleSC(0.2; k3 = 3.6, a = 0.01, b = 0.02), JuTrack.KOCT_SC(len = 0.2, k3 = 3.6, a = 0.01, b = 0.02))
-        _assert_parity("SBendSC", SBendSC(1.0, 0.0, 0.0, 0.0; a = 0.01, b = 0.02), JuTrack.SBEND_SC(len = 1.0, angle = 0.0, e1 = 0.0, e2 = 0.0, a = 0.01, b = 0.02))
+        _assert_parity("QuadrupoleSC", QuadrupoleSC(0.4; k1 = 0.0, a = 0.01, b = 0.02, num_int_steps = 10), JuTrack.KQUAD_SC(len = 0.4, k1 = 0.0, a = 0.01, b = 0.02))
+        _assert_parity("SextupoleSC", SextupoleSC(0.3; k2 = 2.4, a = 0.01, b = 0.02, num_int_steps = 10), JuTrack.KSEXT_SC(len = 0.3, k2 = 2.4, a = 0.01, b = 0.02))
+        _assert_parity("OctupoleSC", OctupoleSC(0.2; k3 = 3.6, a = 0.01, b = 0.02, num_int_steps = 10), JuTrack.KOCT_SC(len = 0.2, k3 = 3.6, a = 0.01, b = 0.02))
+        _assert_parity("SBendSC", SBendSC(1.0, 0.0, 0.0, 0.0; a = 0.01, b = 0.02, num_int_steps = 10), JuTrack.SBEND_SC(len = 1.0, angle = 0.0, e1 = 0.0, e2 = 0.0, a = 0.01, b = 0.02))
         _assert_parity("RBendSC", RBendSC(1.2, 0.0), JuTrack.RBEND_SC(len = 1.2, angle = 0.0))
         _assert_parity("LBend", LBend(0.7, 0.0; K = 0.0), JuTrack.LBEND(len = 0.7, angle = 0.0, K = 0.0))
         _assert_parity("SpaceCharge", SpaceCharge(0.9; effective_len = 0.4, Nl = 11, Nm = 9, a = 0.015, b = 0.017), JuTrack.SPACECHARGE(len = 0.9, effective_len = 0.4, Nl = 11, Nm = 9, a = 0.015, b = 0.017))
@@ -245,6 +253,8 @@ end
     @test_throws ArgumentError Wiggler(1.2)
     @test_throws ArgumentError Wiggler(1.2; lw = 0.2, Nsteps = 0)
     @test_throws ArgumentError Wiggler(1.2; lw = 0.2, energy = M_ELECTRON)
+    @test_throws ArgumentError Wiggler(1.2; lw = 0.2, energy = 0.5e9, mass = M_PROTON)  # below rest mass
+    @test_throws ArgumentError Wiggler(1.2; lw = 0.2, energy = 1e9, charge = 0.0)
     @test_throws ArgumentError Wiggler(1.2; lw = 0.2, By = [1, 1, 0])
     @test_throws ArgumentError Wiggler(1.2; lw = 0.2, Bx = [1, 1, 1])
     @test_throws ArgumentError Wiggler(
@@ -260,18 +270,42 @@ end
 @testset "Canonical longitudinal slip map" begin
     rf = AccelCavity(0.0; freq=500.0e6, h=1200.0, energy=ENERGY_VAL)
     elem = LongitudinalRFMap(2.0e-4, rf)
-    beam = Beam(ENERGY_VAL)
+    beam = jutrack_beam(ENERGY_VAL)
     delta_e = 2.0e-3
     input = SVector(0.0, 0.0, 0.0, 0.0, 1.0e-3, delta_e)
     output = pass!(elem, input, inv(beam.beta))
     eta = elem.alphac - (1 - beam.beta^2)
-    expected_z = input[5] - (2π * rf.h * eta / (rf.k * beam.beta)) * delta_e
+    # Δz = −C η δP / β0 with C = 2πh/k and δP = δE/β0  ⇒  −C η δE / β0²
+    expected_z = input[5] - (2π * rf.h * eta / (rf.k * beam.beta^2)) * delta_e
     @test output[5] ≈ expected_z atol=1.0e-15
     @test output[5] < input[5]
+
+    # The slip map must reproduce a real ring's one-turn slip at finite β0:
+    # compare against the off-momentum closed orbit of a dispersive proton ring
+    # whose αc is taken from the dispersion integral ∮D/ρ ds.
+    pbeam = Beam(kinetic=1.0e9, mass=M_PROTON, charge=1.0)
+    ring = Lattice(vcat([AbstractElement[
+        Quadrupole(0.5, 0.9), Drift(0.6), SBend(1.2, 2π/40; num_int_steps=10), Drift(0.6),
+        Quadrupole(0.5, -0.9), Drift(0.6), SBend(1.2, 2π/40; num_int_steps=10), Drift(0.6),
+    ] for _ in 1:20]...); periodic=true)
+    C0 = total_length(ring)
+    disp = periodic_twiss(ring, pbeam; max_step=0.02)
+    fine = refine_lattice(ring; sample_integrator_steps=false, max_step=0.02)
+    I1 = sum(0.5 * (disp.dx[i] + disp.dx[i+1]) * el.angle for (i, el) in enumerate(fine.elements) if el isa SBend)
+    αc = I1 / C0
+    δP = 1.0e-5
+    δE = deltae_from_deltap(δP, pbeam.beta)
+    co = find_closed_orbit_4d(ring, pbeam; dp=δP)
+    Δz_ring = linepass(ring, SVector(co[1], co[2], co[3], co[4], 0.0, δE), pbeam)[5]
+    frf = 100 * TrackPad.C_LIGHT / C0                        # h = 100 fits the ring
+    slip = LongitudinalRFMap(αc, RFCavity(0.0, 1.0e6, frf; h=100.0, energy=pbeam.energy, charge=pbeam.charge))
+    Δz_map = pass!(slip, SVector(0.0, 0.0, 0.0, 0.0, 0.0, δE), inv(pbeam.beta))[5]
+    @test Δz_map ≈ Δz_ring rtol=2e-4     # second order in δ and the ∮ quadrature
+    @test !isapprox(Δz_map, Δz_ring * pbeam.beta; rtol=1e-2)   # the old β0⁻¹ form is 12.5% off
 end
 
 @testset "Finite-beta canonical maps" begin
-    beam = Beam(50.0e6; mass=M_PROTON, charge=1.0)
+    beam = Beam(kinetic=50.0e6, mass=M_PROTON, charge=1.0)
     beti = inv(beam.beta)
     reference = SVector(1.0e-3, 2.0e-3, -7.0e-4, 8.0e-4, 3.0e-3, 2.0e-2)
     symplectic_form = zeros(6, 6)
@@ -315,7 +349,7 @@ end
         @test norm(map' * symplectic_form * map - symplectic_form, Inf) < 1.0e-7
     end
 
-    p0c = beam.beta * (beam.energy + beam.mass)
+    p0c = TrackPad.p0c(beam)
     lag = TrackPad.C_LIGHT / (4 * 80.0e6)
     cavity = RFCavity(0.0, 2.0e5, 80.0e6, lag;
                       energy=beam.energy, charge=beam.charge)
@@ -390,7 +424,7 @@ end
 @testset "Longitudinal wake convolution" begin
     # The wake Green function must be convolved with the histogram of r[5],
     # not evaluated at a particle's own coordinate.
-    beam = Beam(ENERGY_VAL)
+    beam = jutrack_beam(ENERGY_VAL)
 
     @testset "constructor validation" begin
         @test_throws ArgumentError LongitudinalRLCWake(nbins = 0)
@@ -498,10 +532,10 @@ end
     end
 
     @testset "physical_wake_scale" begin
-        beam_e = Beam(ENERGY_VAL)
+        beam_e = jutrack_beam(ENERGY_VAL)
         bunch_charge = -1.0e-9
         nmacro = 1000
-        p0c = beam_e.beta * (beam_e.energy + beam_e.mass)
+        p0c = TrackPad.p0c(beam_e)
         sc = physical_wake_scale(beam_e, bunch_charge, nmacro)
         # W [V/C] * Qmacro [C] * q/e gives an energy change in eV.
         expected = beam_e.charge * (bunch_charge / nmacro) / p0c
@@ -509,14 +543,14 @@ end
         @test sc > 0
         @test_throws ArgumentError physical_wake_scale(beam_e, 1.0e-9, 0)
         @test_throws ArgumentError physical_wake_scale(beam_e, Inf, 1000)
-        @test_throws ArgumentError physical_wake_scale(Beam(0.0), -1.0e-9, 1000)
+        @test_throws ArgumentError physical_wake_scale(Beam(kinetic=0.0), -1.0e-9, 1000)
         @test_throws ArgumentError physical_wake_scale(
-            Beam(ENERGY_VAL; charge = Inf), -1.0e-9, 1000)
+            jutrack_beam(ENERGY_VAL; charge = Inf), -1.0e-9, 1000)
         @test physical_wake_scale(beam_e, 2 * bunch_charge, nmacro) ≈ 2 * sc
 
         # Like-sign electron and positive-charge bunches both decelerate for a
         # positive wake; inconsistent source/test signs reverse the kick.
-        beam_p = Beam(ENERGY_VAL; charge = 1.0)
+        beam_p = jutrack_beam(ENERGY_VAL; charge = 1.0)
         @test physical_wake_scale(beam_p, -bunch_charge, nmacro) ≈ sc
         @test physical_wake_scale(beam_p, bunch_charge, nmacro) ≈ -sc
 
@@ -555,7 +589,7 @@ end
     eap = [1.0e-3, 8.0e-4, 0.0, 0.0, 0.0, 0.0]
 
     function run_aperture_pair(elem_tp, elem_jt)
-        tpb = Beam(ENERGY_VAL)
+        tpb = jutrack_beam(ENERGY_VAL)
         jtb = JuTrack.Beam(flip_longitudinal_coordinate(wide),
                            energy = ENERGY_VAL, mass = JuTrack.m_e)
         c = copy(wide)
@@ -594,4 +628,28 @@ end
     @test_skip false # JuTrack has no Float64 pass! for LongitudinalWake.
     # StrongThinGaussianBeam / StrongGaussianBeam are verified from first
     # principles in test/verify_beambeam.jl; JuTrack's beam-beam is a placeholder.
+end
+
+@testset "Wiggler is normalised to the reference particle" begin
+    # The map depends on the species only through γ = E/m and the wiggler
+    # parameter |q|·Bmax·lw/m, so a proton wiggler equals an electron wiggler
+    # at the same γ with Bmax scaled by m_e/m_p (non-radiating).
+    γ = 20.0
+    r0 = SVector(1.0e-3, 2.0e-4, -8.0e-4, 1.5e-4, 1.0e-3, 5.0e-4)
+    By = [1.0, 0.5, 0.0, 1.0, 1.0, 0.3]
+    wp = Wiggler(1.2; lw = 0.2, Bmax = 0.8, Nsteps = 8, By = By,
+                 energy = γ * M_PROTON, mass = M_PROTON, charge = 1.0)
+    we = Wiggler(1.2; lw = 0.2, Bmax = 0.8 * M_ELECTRON / M_PROTON, Nsteps = 8, By = By,
+                 energy = γ * M_ELECTRON, mass = M_ELECTRON, charge = -1.0)
+    beti = γ / sqrt(γ^2 - 1)
+    @test pass!(wp, r0, beti) ≈ pass!(we, r0, beti) rtol = 1e-13
+    # a doubly charged ion at the same γ and field sees twice the kick strength
+    w2 = Wiggler(1.2; lw = 0.2, Bmax = 0.8, Nsteps = 8, By = By,
+                 energy = γ * M_PROTON, mass = M_PROTON, charge = 2.0)
+    w1b = Wiggler(1.2; lw = 0.2, Bmax = 1.6, Nsteps = 8, By = By,
+                  energy = γ * M_PROTON, mass = M_PROTON, charge = 1.0)
+    @test pass!(w2, r0, beti) == pass!(w1b, r0, beti)
+    # electron defaults are unchanged (JuTrack parity above relies on this)
+    wdef = Wiggler(1.2; lw = 0.2, Bmax = 0.8, Nsteps = 8)
+    @test wdef.mass === M_ELECTRON && wdef.charge === -1.0
 end

@@ -326,27 +326,49 @@ function _pals_beam(reference;
     inferred_charge = Float64(get(reference, "charge_ref", inferred_charge))
     beam_mass = mass === nothing ? inferred_mass : Float64(mass)
     beam_charge = charge === nothing ? inferred_charge : Float64(charge)
-    kinetic = if beam_energy !== nothing
-        Float64(beam_energy)
+    # `beam_energy` and PALS `E_tot_ref` are total energies; `pc_ref` is P0*c.
+    if beam_energy !== nothing
+        return Beam(Float64(beam_energy); mass=beam_mass, charge=beam_charge)
     elseif haskey(reference, "pc_ref")
-        pc = Float64(reference["pc_ref"])
-        sqrt(pc^2 + beam_mass^2) - beam_mass
+        return Beam(; pc=Float64(reference["pc_ref"]), mass=beam_mass, charge=beam_charge)
     elseif haskey(reference, "E_tot_ref")
-        Float64(reference["E_tot_ref"]) - beam_mass
+        return Beam(Float64(reference["E_tot_ref"]); mass=beam_mass, charge=beam_charge)
     else
-        1.0e9
+        return Beam(1.0e9; mass=beam_mass, charge=beam_charge)
     end
-    kinetic >= 0 || throw(ArgumentError("PALS reference energy is below rest mass"))
-    return Beam(kinetic; mass=beam_mass, charge=beam_charge)
 end
 
 """
     read_pals(filename; lattice=nothing, branch=nothing, sequence=nothing,
-              beam_energy=nothing, mass=nothing, charge=nothing, strict=true)
+              beam_energy=nothing, mass=nothing, charge=nothing,
+              num_int_steps=nothing, strict=true)
 
 Resolve and compile one PALS branch into a TrackPad `(Lattice, Beam)` pair.
 Explicit beam keywords override `BeginningEle.ReferenceP`; otherwise the
 reference species and momentum/total energy are used.
+
+`num_int_steps` sets the symplectic integrator step count of the thick magnets
+this reader builds -- the knob `read_madx` has always had, which the PALS
+reader did not, so a PALS lattice was stuck at whatever each element's
+constructor defaulted to. It is the more forgiving of the two: `read_madx`
+takes an `Int` and nothing else, while here
+
+* `nothing` (default) leaves every element at its own constructor default, so
+  existing callers are unaffected;
+* an `Integer` applies one count to every thick magnet;
+* an `AbstractDict` applies a count per PALS kind (`"Quadrupole"`, `"Bend"`,
+  ...), matched case-insensitively and through the same aliases the reader
+  itself uses, so `"Bend"` and `"SBend"` name one element. Kinds the
+  dictionary does not mention keep their default, as do the kinds whose
+  elements carry no integrator at all -- `Corrector`, `Solenoid`, `RFCavity`
+  and `ThinMultipole` take no step count, so naming one has no effect.
+
+The knob matters because cost is linear in it: one step of the 4th-order
+integrator is four body maps and three kicks, so a magnet at the default 10
+steps costs 40 body maps and 30 kicks. Code that compares against a thin-lens
+tracker slice by slice wants roughly `slices / 3` steps here for the same
+number of kicks -- and gets better accuracy at that count, the integrator
+being 4th order against the thin lens's 2nd.
 """
 function read_pals(filename::AbstractString;
                    lattice::Union{String,Symbol,Nothing}=nothing,
@@ -355,6 +377,7 @@ function read_pals(filename::AbstractString;
                    beam_energy::Union{Real,Nothing}=nothing,
                    mass::Union{Real,Nothing}=nothing,
                    charge::Union{Real,Nothing}=nothing,
+                   num_int_steps::Union{Integer,AbstractDict,Nothing}=nothing,
                    strict::Bool=true)
     resolved = resolve_pals(
         filename;
@@ -362,14 +385,51 @@ function read_pals(filename::AbstractString;
     )
     return _compile_pals(
         resolved;
-        beam_energy=beam_energy, mass=mass, charge=charge, strict=strict,
+        beam_energy=beam_energy, mass=mass, charge=charge,
+        num_int_steps=num_int_steps, strict=strict,
     )
 end
+
+"""Positive step count from a number that may have crossed a language."""
+function _pals_as_steps(value, what::AbstractString)
+    count = value isa Integer ? Int(value) : round(Int, value)
+    count > 0 || throw(ArgumentError("$what must be positive, got $value"))
+    return count
+end
+
+"""One kind's canonical spelling, so aliases share a step count.
+
+`_pals_build_element` builds "Bend" and "SBend" as the same element, so a step
+table that names one has to reach the other -- writers disagree about which
+spelling they emit, and a lookup that missed would silently leave the magnet
+at its default with nothing to show for it.
+"""
+function _pals_canonical_kind(kind::AbstractString)
+    upper = uppercase(String(kind))
+    return upper == "BEND" ? "SBEND" : upper
+end
+
+"""Integrator steps for one PALS kind, or `nothing` to keep the default."""
+function _pals_int_steps(spec, kind::AbstractString)
+    spec === nothing && return nothing
+    spec isa Integer && return _pals_as_steps(spec, "num_int_steps")
+    wanted = _pals_canonical_kind(kind)
+    for (key, value) in pairs(spec)
+        if _pals_canonical_kind(string(key)) == wanted
+            return _pals_as_steps(value, "num_int_steps[$key]")
+        end
+    end
+    return nothing
+end
+
+"""Splat into a constructor call: empty when the step count is unset."""
+_pals_steps_kw(steps) = steps === nothing ? NamedTuple() : (num_int_steps = steps,)
 
 function _compile_pals(resolved::PALSResolvedBranch;
                        beam_energy::Union{Real,Nothing}=nothing,
                        mass::Union{Real,Nothing}=nothing,
                        charge::Union{Real,Nothing}=nothing,
+                       num_int_steps::Union{Integer,AbstractDict,Nothing}=nothing,
                        strict::Bool=true)
     beam = _pals_beam(
         resolved.reference; beam_energy=beam_energy, mass=mass, charge=charge,
@@ -381,7 +441,7 @@ function _compile_pals(resolved::PALSResolvedBranch;
         push!(elements, _pals_build_element(
             occurrence.name, occurrence.definition;
             strict=strict, beam_energy=beam.energy, beam_charge=beam.charge,
-            beam_mass=beam.mass,
+            beam_mass=beam.mass, num_int_steps=num_int_steps,
         ))
     end
     name = isempty(resolved.lattice_name) ? resolved.name : resolved.lattice_name
@@ -428,8 +488,11 @@ end
 
 function _pals_build_element(name::String, d::Dict;
                              strict::Bool=true, beam_energy::Real=1.0e9,
-                             beam_charge::Real=1.0, beam_mass::Real=M_ELECTRON)
+                             beam_charge::Real=1.0, beam_mass::Real=M_ELECTRON,
+                             num_int_steps::Union{Integer,AbstractDict,Nothing}=nothing)
     kind = string(get(d, "kind", "Drift"))
+    steps = _pals_int_steps(num_int_steps, kind)
+    steps_kw = _pals_steps_kw(steps)
     bp   = get(d, "BendP", Dict{String,Any}())
     len  = uppercase(kind) in ("BEND", "SBEND", "RBEND") ?
            _pals_bend_length(d, bp) : Float64(get(d, "length", 0.0))
@@ -460,17 +523,17 @@ function _pals_build_element(name::String, d::Dict;
         k1  = _pals_strength(mmp, 1, len)
         k1s = _pals_strength(mmp, 1, len; skew=true)
         pa  = k1s != 0 ? [0.0, k1s, 0.0, 0.0] : nothing
-        return Quadrupole(len, k1; name=Symbol(name), polynom_a=pa)
+        return Quadrupole(len, k1; name=Symbol(name), polynom_a=pa, steps_kw...)
     elseif k == "SEXTUPOLE"
         k2  = _pals_strength(mmp, 2, len)
         k2s = _pals_strength(mmp, 2, len; skew=true)
         pa  = k2s != 0 ? [0.0, 0.0, k2s, 0.0] : nothing
-        return Sextupole(len, k2; name=Symbol(name), polynom_a=pa)
+        return Sextupole(len, k2; name=Symbol(name), polynom_a=pa, steps_kw...)
     elseif k == "OCTUPOLE"
         k3 = _pals_strength(mmp, 3, len)
         k3s = _pals_strength(mmp, 3, len; skew=true)
         pa = k3s != 0 ? [0.0, 0.0, 0.0, k3s] : nothing
-        return Octupole(len, k3; name=Symbol(name), polynom_a=pa)
+        return Octupole(len, k3; name=Symbol(name), polynom_a=pa, steps_kw...)
     elseif k in ("BEND", "SBEND")
         angle = Float64(get(bp, "angle_ref", 0.0))
         e1    = Float64(get(bp, "e1",        0.0))
@@ -485,7 +548,7 @@ function _pals_build_element(name::String, d::Dict;
         return SBend(len, angle, e1, e2; name=Symbol(name),
                      fint1=fint1, fint2=fint2, gap=2*hgap,
                      polynom_a=pa, polynom_b=pb,
-                     max_order=(k1 != 0 || k1s != 0) ? 1 : 0)
+                     max_order=(k1 != 0 || k1s != 0) ? 1 : 0, steps_kw...)
     elseif k == "RBEND"
         angle = Float64(get(bp, "angle_ref", 0.0))
         e1    = Float64(get(bp, "e1",        0.0))
@@ -500,7 +563,7 @@ function _pals_build_element(name::String, d::Dict;
         return RBend(len, angle; name=Symbol(name),
                      fint1=fint1, fint2=fint2, gap=2*hgap,
                      polynom_a=pa, polynom_b=pb,
-                     max_order=(k1 != 0 || k1s != 0) ? 1 : 0)
+                     max_order=(k1 != 0 || k1s != 0) ? 1 : 0, steps_kw...)
     elseif k == "RFCAVITY"
         volt  = Float64(get(rfp, "voltage",   0.0))
         freq  = Float64(get(rfp, "frequency", 0.0))
@@ -547,13 +610,23 @@ function _pals_build_element(name::String, d::Dict;
         sy = Float64(get(bbp, "sigma_y",    1e-3))
         npart = Float64(get(bbp, "N_particle", 0.0))
         qs = Float64(get(bbp, "charge", beam_charge))
-        gamma_w = (Float64(beam_energy) + Float64(beam_mass)) / Float64(beam_mass)
+        gamma_w = Float64(beam_energy) / Float64(beam_mass)   # beam_energy is total
         amplitude = npart * classical_radius(beam_mass, beam_charge) * Float64(beam_charge) * qs / gamma_w
         return StrongThinGaussianBeam(amplitude, sx, sy; name=Symbol(name),
                                       xoffset=Float64(get(bbp, "x_offset", 0.0)),
                                       yoffset=Float64(get(bbp, "y_offset", 0.0)))
     elseif k == "WIGGLER"
-        return Wiggler(len; name=Symbol(name))
+        # PALS carries no wiggler parameter group that TrackPad maps (period
+        # length, peak field, harmonics), and a Wiggler cannot be built without
+        # them; fall through to the unsupported-element policy.
+        strict && throw(ArgumentError(
+            "PALS element '$name' is a wiggler; TrackPad's PALS subset does not map " *
+            "wiggler parameters (period length, peak field, harmonics). Construct " *
+            "`Wiggler(L; lw, Bmax, By, energy=beam.energy, ...)` directly and " *
+            "replace the element.",
+        ))
+        @warn "PALS: wiggler '$name' has no mapped parameters; using Drift"
+        return Drift(len; name=Symbol(name))
     else
         strict && throw(ArgumentError(
             "PALS element '$name' has unsupported kind '$kind'",
@@ -595,10 +668,10 @@ function read_madx(filename::AbstractString;
                    beam_energy::Union{Real,Nothing} = nothing,
                    mass::Union{Real,Nothing} = nothing,
                    charge::Union{Real,Nothing} = nothing,
-                   num_int_steps::Int = 10,
+                   num_int_steps::Union{Integer,Nothing} = nothing,
                    strict::Bool = true,
                    periodic::Union{Bool,Nothing} = nothing)
-    num_int_steps > 0 ||
+    num_int_steps === nothing || num_int_steps > 0 ||
         throw(ArgumentError("num_int_steps must be positive"))
     text = read(filename, String)
     tokens = _madx_tokenize(text)
@@ -683,18 +756,16 @@ function _madx_beam(beam_info;
         _pals_species_defaults(get(beam_info, "particle", "electron"))
     beam_mass = mass === nothing ? inferred_mass : Float64(mass)
     beam_charge = charge === nothing ? inferred_charge : Float64(charge)
-    kinetic = if beam_energy !== nothing
-        Float64(beam_energy)
+    # MAD-X ENERGY is the total energy and PC the momentum, both in GeV.
+    if beam_energy !== nothing
+        return Beam(Float64(beam_energy); mass=beam_mass, charge=beam_charge)
     elseif haskey(beam_info, "pc")
-        pc = Float64(beam_info["pc"]) * 1.0e9
-        sqrt(pc^2 + beam_mass^2) - beam_mass
+        return Beam(; pc=Float64(beam_info["pc"]) * 1.0e9, mass=beam_mass, charge=beam_charge)
     elseif haskey(beam_info, "energy")
-        Float64(beam_info["energy"]) * 1.0e9 - beam_mass
+        return Beam(Float64(beam_info["energy"]) * 1.0e9; mass=beam_mass, charge=beam_charge)
     else
-        1.0e9
+        return Beam(1.0e9; mass=beam_mass, charge=beam_charge)
     end
-    kinetic >= 0 || throw(ArgumentError("MAD-X beam energy is below rest mass"))
-    return Beam(kinetic; mass=beam_mass, charge=beam_charge)
 end
 
 # ---- MAD-X placement record ----
@@ -1124,7 +1195,11 @@ end
 # ---- MAD-X element builder ----
 function _madx_build_element(name::String, d::Dict, type_defs::Dict;
                              strict::Bool=true, beam_energy::Real=1.0e9,
-                             beam_charge::Real=1.0, num_int_steps::Int=10)
+                             beam_charge::Real=1.0,
+                             num_int_steps::Union{Integer,Nothing}=nothing)
+    # `nothing` keeps each element constructor's own default, which differs by
+    # type (see the elements guide); an explicit value overrides all of them.
+    steps = _pals_steps_kw(num_int_steps)
     type_kw = uppercase(get(d, "_type", "DRIFT"))
     base    = _madx_resolve_base(type_kw, type_defs)
     p       = merge(base, d)
@@ -1165,33 +1240,31 @@ function _madx_build_element(name::String, d::Dict, type_defs::Dict;
         pa = k1s != 0 ? [0.0, k1s, 0.0, 0.0] : nothing
         return Quadrupole(
             L, k1;
-            name=sname, polynom_a=pa, num_int_steps=num_int_steps,
+            name=sname, polynom_a=pa, steps...,
         )
     elseif mtype == "SEXTUPOLE"
         pa = k2s != 0 ? [0.0, 0.0, k2s, 0.0] : nothing
         return Sextupole(
             L, k2;
-            name=sname, polynom_a=pa, num_int_steps=num_int_steps,
+            name=sname, polynom_a=pa, steps...,
         )
     elseif mtype == "OCTUPOLE"
         pa = k3s != 0 ? [0.0, 0.0, 0.0, k3s] : nothing
         return Octupole(
             L, k3;
-            name=sname, polynom_a=pa, num_int_steps=num_int_steps,
+            name=sname, polynom_a=pa, steps...,
         )
     elseif mtype == "SBEND"
         pb = k1 != 0 ? [0.0, k1, 0.0, 0.0] : nothing
         pa = k1s != 0 ? [0.0, k1s, 0.0, 0.0] : nothing
         return SBend(L, angle, e1, e2; name=sname,
                      fint1=fint, fint2=fint2, gap=gap,
-                     polynom_a=pa, polynom_b=pb,
-                     num_int_steps=num_int_steps)
+                     polynom_a=pa, polynom_b=pb, steps...)
     elseif mtype == "RBEND"
         arc_length = iszero(angle) ? L : L * angle / (2sin(angle / 2))
         return RBend(
             arc_length, angle;
-            name=sname, fint1=fint, fint2=fint2, gap=gap,
-            num_int_steps=num_int_steps,
+            name=sname, fint1=fint, fint2=fint2, gap=gap, steps...,
         )
     elseif mtype == "RFCAVITY"
         return RFCavity(
@@ -1221,7 +1294,7 @@ function _madx_build_element(name::String, d::Dict, type_defs::Dict;
         pa = Float64[Float64(get(p, "ksl[$(i-1)]", 0.0)) for i in 1:4]
         return ThinMultipole(
             L, pa, pb;
-            name=sname, num_int_steps=num_int_steps,
+            name=sname, steps...,
         )
     elseif mtype == "DIPEDGE"
         return Marker(; name=sname)
@@ -1299,7 +1372,7 @@ end
 _elem_name(elem) = hasproperty(elem, :name) ? getproperty(elem, :name) : :UNKNOWN
 
 function _pals_reference_definition(beam::Beam)
-    total_energy = Float64(beam.energy + beam.mass)
+    total_energy = Float64(beam.energy)
     pc_ref = sqrt(max(total_energy^2 - Float64(beam.mass)^2, 0.0))
     species = if isapprox(abs(beam.mass), M_ELECTRON; rtol=0, atol=1e-6)
         beam.charge < 0 ? "electron" : "positron"

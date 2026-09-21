@@ -26,7 +26,9 @@ JuTrack.use_exact_beti = 1
 # Reconstruct Bend Lattice in TrackPad
 # B_DBA = SBEND(len=1.0, angle=pi/9, e1=pi/18, e2=pi/18)
 angle_val = pi/4
-B_DBA = SBend(1.0, angle_val, angle_val/2, angle_val/2; name="B_DBA")
+# JuTrack SBEND uses 10 integration steps by default; TrackPad now defaults
+# to 4, so the parity model is pinned explicitly.
+B_DBA = SBend(1.0, angle_val, angle_val/2, angle_val/2; name="B_DBA", num_int_steps=10)
 
 line_bend = Lattice([B_DBA])
 
@@ -43,7 +45,7 @@ try
     lost_flags = zeros(Int, nparticles)
 
     # Tracking
-    beam = Beam(energy_val)
+    beam = jutrack_beam(energy_val)
     linepass!(coords, line_bend, beam, lost_flags)
     # Verification
     diff = norm(coords - particles_final_jutrack)

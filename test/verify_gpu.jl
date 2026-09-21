@@ -61,10 +61,14 @@ end
     ring = Lattice(supported_gpu_elements(T, beam.energy); periodic=true)
     expected = scalar_reference(ring, beam, coords0, 3)
     actual = copy(coords0)
-    batch_ringpass!(actual, GPULattice(ring, beam; dtype=T), 3)
+    track!(actual, GPULattice(ring, beam; dtype=T); nturns=3)
     @test isapprox(actual, expected; rtol=3e-12, atol=3e-13)
-    @test_throws ArgumentError batch_ringpass!(
-        copy(coords0), GPULattice(Lattice([Drift(T(0.1))]), beam; dtype=T), 1,
+    # the positional spelling is the same call
+    actual_pos = copy(coords0)
+    batch_linepass!(actual_pos, GPULattice(ring, beam; dtype=T), 3)
+    @test actual_pos == actual
+    @test_throws ArgumentError track!(
+        copy(coords0), GPULattice(Lattice([Drift(T(0.1))]), beam; dtype=T); nturns=2,
     )
     @test_throws ArgumentError batch_linepass!(
         copy(coords0), GPULattice(Lattice([Drift(T(0.1))]), beam; dtype=T), 2,

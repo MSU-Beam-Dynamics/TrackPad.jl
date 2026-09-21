@@ -64,7 +64,7 @@ try
         @test lat_turn7[2] isa Quadrupole
         @test !isapprox(lat_turn0[2].k1, lat_turn7[2].k1; atol=1e-12)
 
-        r_ring = ringpass(lat_td, r0, beam, 3; time=0.0, dt_turn=0.1, turn=4)
+        r_ring = track(lat_td, r0, beam; nturns=3, time=0.0, dt_turn=0.1, turn=4)
         r_manual = r0
         r_jt = r0
         for k in 0:2

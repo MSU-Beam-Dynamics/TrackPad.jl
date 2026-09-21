@@ -32,20 +32,54 @@ Optional integrations live in `ext/` and must not become hard dependencies:
 - `TrackPadCUDAExt.jl`
 - `TrackPadMetalExt.jl`
 - `TrackPadEnzymeExt.jl`
-- `TrackPadPolySeriesExt.jl`
+- `TrackPadMakieExt.jl`
+
+PolySeries is a hard dependency (`src/tpsa_polyseries.jl`): it is the backend
+of the default `method=:tpsa` of every ring-optics function, so results must
+not depend on which other packages are loaded.
 
 ## Non-Negotiable Physics Invariants
 
 - Coordinate order is `(x, px, y, py, z, delta)`.
 - `z = s/beta0 - c*t = -c(t - t0)` is positive for an early particle and is
   canonically paired with `delta`.
-- `delta` is `delta_E = (E - E0)/(P0*c)`, not `(P - P0)/P0`.
-- `Beam.energy` is kinetic energy in eV, not total energy or momentum.
+- The stored `delta` is `delta_E = (E - E0)/(P0*c)`, not `(P - P0)/P0`. The
+  *interface* speaks `delta_P`: every scalar `dp`/`dpp` argument and the values
+  returned by `getchrom` and `periodic_twiss` are relative momentum,
+  converted exactly with `deltae_from_deltap`/`deltap_from_deltae`; coordinate
+  vectors, `orb`, `reference` and Jacobians stay in `delta_E`. `wrt=:deltae`
+  opts out. Never apply the first-order `delta_E = beta0*delta_P` in code.
+- `Beam.energy` is the reference **total** energy in eV. `Beam(kinetic=K)` and
+  `Beam(pc=P0c)` are the other constructors; `kinetic_energy(beam)`/`p0c(beam)`
+  the accessors. A positional energy below the rest mass throws.
 - `Beam.mass` is rest-mass energy in eV.
 - Macroparticle distributions are `N x 6` matrices, not fields of `Beam`.
 - Distribution covariance uses canonical `(x, px, y, py, z, delta_E)` order;
-  ordinary dispersion is differentiated with respect to `delta_E`.
+  its `dispersion` keyword is the `delta_E` response (the `dx`… of
+  `periodic_twiss(...; wrt=:deltae)`), because the covariance lives in the
+  stored coordinates.
+- `getchrom` and every momentum derivative in `periodic_twiss` are measured
+  about the off-momentum closed orbit. Do not add an on-axis launch option: it
+  is JuTrack's convention and a different quantity once sextupoles are present.
+  JuTrack parity tests reproduce it by hand from `findm66`.
+- Every quantity in `TwissResult` has both a `method=:fd` and a
+  `method=:tpsa` implementation (the latter in the PolySeries extension,
+  dispatched on `Val(method)`). Adding a field means adding both and a
+  cross-check test in `test/verify_ring_optics.jl` / `test/verify_tpsa.jl`.
+- Integration-step defaults are per element type (quadrupoles/bends 4,
+  sextupoles 2, octupoles 1). Any change needs a measured accuracy-vs-cost
+  table in the docs and a changelog entry; JuTrack parity tests pin
+  `num_int_steps=10` explicitly.
+- The AT-style dipole edge carries its longitudinal term
+  (`SYMPLECTIC_BEND_EDGE`); the AT map is reachable with `Val(false)`.
 - Scalar CPU tracking is the behavioral reference.
+- `track`/`track!` are the tracking entry points (one particle or an `N x 6`
+  matrix, `nturns` passes, `threaded=true`, or a packed `GPULattice`); they
+  report a loss as `NaN` coordinates. `linepass`/`linepass!` are the
+  single-pass JuTrack-compatible spellings and keep JuTrack's loss convention
+  (a flag, coordinates left as they were) — do not change either one's
+  semantics to match the other. Every backend must agree with the serial
+  matrix path bit for bit.
 - The default drift uses the exact relativistic Hamiltonian.
 - JuTrack parity is only normative where JuTrack uses the same canonical
   variables. Mixed-convention maps are compared in the ultrarelativistic limit;
@@ -55,7 +89,7 @@ Optional integrations live in `ext/` and must not become hard dependencies:
 - `RFCavity.lag` is a longitudinal offset in metres, not radians or cycles.
 - `RFCavity.energy > 0` and the correct reference charge are required for an RF
   kick in directly constructed cavities.
-- RF kicks are normalized by `P0*c`, computed from reference kinetic energy and
+- RF kicks are normalized by `P0*c = beta0*E0`, computed from the total energy and
   `beta`; do not restore JuTrack's `K0*beta0^2` approximation.
 - Unsupported GPU elements/settings must throw during `GPULattice`
   construction. Never substitute a drift or marker silently.
@@ -88,7 +122,21 @@ infer an unusable concrete vector element type.
 - Preserve canonical JuTrack numerical behavior where parity is already tested.
 - Element parity tests generally use an absolute tolerance of `1e-15`.
 - Keep finite-difference step defaults stable unless a targeted analysis and
-  cross-code fixture justify a change.
+  cross-code fixture justify a change. The `getchrom` defaults sit at their
+  measured optimum (about 1e-6 absolute); see the Performance page.
+- Kernels must not subtract O(1) or O(L) quantities to obtain a small result
+  (drift `z`, exact-bend `x`): form the small difference algebraically
+  (`pz − 1 = (p² − 1 − px² − py²)/(pz + 1)`, `p² − 1 = δE(2/β0 + δE)`).
+  Finite-difference optics divide such roundoff by 1e-8. Never write `3f1`
+  for `3*f1` in Julia — it is a `Float32` literal.
+- Use the exact `δP(δE)` everywhere a map needs `δP`; the linearised `δE/β0`
+  is a `β0 = 1` shortcut that breaks species independence of `Q(δP)`.
+- `test/verify_ring_optics.jl` holds a cross-code reference ring with MAD-X,
+  PTC, Xsuite and pyAT numbers. A change that moves any of them needs the
+  external codes re-run, not the reference edited.
+- Cross-code parity tests must pin every convention that TrackPad's defaults
+  no longer share with the other code: `num_int_steps`, `wrt`, and the
+  closed-orbit reference (reproduce an on-axis launch from `findm66`).
 - Keep the built-in PALS reader limited to its documented subset. Full-language
   expansion belongs in an external parser or consumer adapter.
 - Keep machine topology, route selection, and source-occurrence metadata in

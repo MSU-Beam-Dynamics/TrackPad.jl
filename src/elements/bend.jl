@@ -51,7 +51,7 @@ end
 function SBend(L, angle, e1 = 0.0, e2 = 0.0;
                name::Union{Symbol, String} = :SBEND,
                polynom_a = nothing, polynom_b = nothing,
-               max_order::Int = 0, num_int_steps::Int = 10, rad::Int = 0,
+               max_order::Int = 0, num_int_steps::Int = 4, rad::Int = 0,
                fint1 = 0.0, fint2 = 0.0, gap = 0.0,
                fringe_bend_entrance::Int = 1, fringe_bend_exit::Int = 1,
                fringe_quad_entrance::Int = 0, fringe_quad_exit::Int = 0,
@@ -136,7 +136,7 @@ end
 function ExactSBend(L, angle, e1 = 0.0, e2 = 0.0;
                     name::Union{Symbol, String} = :ESBEND,
                     polynom_a = nothing, polynom_b = nothing,
-                    max_order::Int = 0, num_int_steps::Int = 10, rad::Int = 0,
+                    max_order::Int = 0, num_int_steps::Int = 4, rad::Int = 0,
                     fint1 = 0.0, fint2 = 0.0, gap = 0.0,
                     fringe_bend_entrance::Int = 1, fringe_bend_exit::Int = 1,
                     fringe_quad_entrance::Int = 0, fringe_quad_exit::Int = 0,

@@ -43,7 +43,7 @@ round_field_reference(x, y, σ) = begin
     (g * x, g * y)
 end
 
-const bb_beam = Beam(3.0e9)               # weak beam: 3 GeV electrons
+const bb_beam = Beam(3.0e9)               # weak beam: 3 GeV (total) electrons
 const bb_beti = 1 / bb_beam.beta
 
 @testset "Faddeeva function" begin
@@ -208,8 +208,9 @@ end
     a = beambeam_amplitude(bb_beam, N, +1.0)
     @test a ≈ N * classical_radius(bb_beam) * (-1.0) * (+1.0) / bb_beam.gamma
     @test a < 0
-    # Magnitude check against the textbook numbers: r_e = 2.818e-15 m, γ = 5871.
-    @test abs(a) ≈ N * 2.8179403e-15 / 5871.8 rtol=1e-4
+    # Magnitude check against the textbook numbers: r_e = 2.818e-15 m and
+    # γ = E/mc² = 3e9/0.511e6 = 5870.9 for a 3 GeV (total energy) electron.
+    @test abs(a) ≈ N * 2.8179403e-15 / 5870.9 rtol=1e-4
 end
 
 @testset "StrongThinGaussianBeam kick" begin

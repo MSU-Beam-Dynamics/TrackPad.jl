@@ -44,14 +44,14 @@ selected names are not retained in the tracking model.
 | `lattice` | `nothing` | Select a PALS `Lattice`; otherwise use the last `use` statement or last lattice |
 | `branch` | `nothing` | Select one branch; otherwise use the first branch |
 | `sequence` | `nothing` | Compatibility alias for a lattice or standalone `BeamLine` |
-| `beam_energy` | `nothing` | Override reference kinetic energy [eV] |
+| `beam_energy` | `nothing` | Override the reference total energy [eV] |
 | `mass` | `nothing` | Override rest-mass energy [eV] |
 | `charge` | `nothing` | Override signed charge in elementary-charge units |
 | `strict` | `true` | Reject unsupported elements and true direction reversal |
 
 The built-in reader handles selected branches, `use`, nested BeamLines,
 repetition, inline definitions, inheritance, and `BeginningEle.ReferenceP`.
-`pc_ref` and `E_tot_ref` are converted to TrackPad kinetic energy.
+`E_tot_ref` is the total energy and `pc_ref` the momentum, both mapping onto `Beam` directly.
 
 Expressions, includes, controllers, forks, and full PALS bookkeeping are not
 implemented. A complete external parser or consumer adapter must reduce those
@@ -67,7 +67,12 @@ The current PALS conversion covers:
 - sector and rectangular bends;
 - RF and crab cavities;
 - solenoid and kickers;
-- basic thin Gaussian beam-beam and wiggler models.
+- the thin Gaussian beam-beam kick.
+
+Wigglers are not mapped: PALS carries no parameter group for the period
+length, peak field and harmonics a `Wiggler` needs, so a PALS wiggler is an
+unsupported element (an error with `strict=true`, a drift with a warning
+otherwise). Build the `Wiggler` directly and substitute it.
 
 Normalized strengths `Kn1`, `Kn2`, `Kn3` and skew counterparts are accepted.
 Integrated forms such as `Kn2L` are divided by nonzero element length. Named
@@ -139,7 +144,8 @@ kickers, thin multipoles, and marker-like `DIPEDGE`.
 | `VOLT` | MV | `volt` | V |
 | `FREQ` | MHz | `freq` | Hz |
 | `LAG` | cycles | `lag` | `LAG*c/freq` [m] |
-| `PC`, `ENERGY` | GeV | `Beam.energy` | kinetic energy [eV] |
+| `ENERGY` | GeV | `Beam.energy` | total energy [eV] |
+| `PC` | GeV | `Beam(pc=...)` | momentum ``P_0c`` [eV] |
 
 The RF conversion includes the signed reference charge. For an electron ring
 above transition, MAD-X `LAG=0.5` remains the stable no-acceleration setting.

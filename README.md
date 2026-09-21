@@ -1,144 +1,129 @@
 # TrackPad.jl
 
-TrackPad is a Julia accelerator tracking library for canonical 6D particle
-tracking and linear optics. It provides optional GPU batch tracking, Enzyme
-derivatives, and TPSA maps through PolySeries while keeping the traditional
-scalar CPU tracking.
+[![CI](https://github.com/MSU-Beam-Dynamics/TrackPad.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/MSU-Beam-Dynamics/TrackPad.jl/actions/workflows/CI.yml)
+[![Docs stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://MSU-Beam-Dynamics.github.io/TrackPad.jl/stable/)
+[![Docs dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://MSU-Beam-Dynamics.github.io/TrackPad.jl/dev/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Requirements
+Symplectic 6-D particle tracking and linear optics for accelerator lattices,
+in Julia.
 
-- Julia: 1.10 or newer
-- Optional: CUDA.jl, Metal.jl, Enzyme.jl, PolySeries.jl
-
-## Features
-- TPSA tracking through PolySeries.jl
-- Automatic differentiation through Enzyme.jl
-- GPU backends: Apple Metal (`Float32`) and NVIDIA CUDA (`Float32`/`Float64`), Note: Not all elements are supported on GPU yet, Unsupported GPU element settings are rejected when a `GPULattice` is built.
-- Matched 4D/6D Gaussian macroparticle distributions with exact finite-sample moments
-- File interchange: documented PALS and MAD-X subsets
-
-
+Each element's physics is written once and reused everywhere: the same
+allocation-free `pass!` code tracks single particles or CPU/GPU batches, is
+differentiated by Enzyme, and expands into truncated-power-series maps with
+PolySeries. A lattice built once can be tracked, differentiated and expanded
+without any of it being rewritten — and there is no separate AD or TPSA
+implementation of the physics to keep in sync.
 
 ## Installation
 
-TrackPad is currently used as a development package:
+TrackPad is not yet in the General registry. Install from GitHub (Julia ≥ 1.12):
 
 ```julia
 using Pkg
-Pkg.develop(path = "/path/to/TrackPad")
+Pkg.add(url = "https://github.com/MSU-Beam-Dynamics/TrackPad.jl")
 ```
 
-For work inside this repository:
-
-```bash
-julia --project=. -e 'using Pkg; Pkg.instantiate()'
-```
-
-## Quick Start
+TrackPad depends on [PolySeries.jl](https://github.com/MSU-Beam-Dynamics/PolySeries.jl)
+(the TPSA backend of the default optics method), also unregistered for now —
+add it first:
 
 ```julia
-using StaticArrays, TrackPad
+Pkg.add(url = "https://github.com/MSU-Beam-Dynamics/PolySeries.jl")
+```
 
-# Beam energy is kinetic energy in eV.
-beam = Beam(3.0e9)
+Optional capabilities switch on by loading a companion package next to
+TrackPad — no configuration needed:
+
+| capability | load | install |
+|---|---|---|
+| batched derivatives | `using Enzyme` | `Pkg.add("Enzyme")` |
+| NVIDIA GPU (`Float32`/`Float64`) | `using CUDA` | `Pkg.add("CUDA")` |
+| Apple GPU (`Float32`) | `using Metal` | `Pkg.add("Metal")` |
+| lattice plots | `using CairoMakie` | `Pkg.add("CairoMakie")` |
+
+## Quick start
+
+```julia
+using TrackPad, StaticArrays
+
+beam = Beam(3.0e9)                     # total energy in eV; electron by default
 
 ring = Lattice(AbstractElement[
-    Drift(1.0; name=:D1),
-    Quadrupole(0.3, 0.7; name=:QF),
-    Drift(1.0; name=:D2),
-    Quadrupole(0.3, -0.7; name=:QD),
-]; name=:FODO, periodic=true)
+    Quadrupole(0.5,  0.9; name=:QF), Drift(0.6),
+    SBend(1.2, 2π/40; name=:B),      Drift(0.6),
+    Sextupole(0.2, 3.0; name=:SF),   Drift(0.6),
+    Quadrupole(0.5, -0.9; name=:QD), Drift(0.6),
+    SBend(1.2, 2π/40; name=:B),      Drift(0.6),
+    Sextupole(0.2, -3.0; name=:SD),  Drift(0.6),
+]; periodic=true)
 
-r0 = @SVector [1e-3, 0.0, 0.0, 0.0, 0.0, 0.0]
-r1 = linepass(ring, r0, beam)
+# one particle, one turn / many turns
+r0 = @SVector [1e-3, 0.0, 0.5e-3, 0.0, 0.0, 0.0]
+r1 = track(ring, r0, beam)
+rN = track(ring, r0, beam; nturns=1000)
 
-qx, qy = gettune(ring, beam)
-twiss = periodic_twiss(
-    ring, beam; sample_integrator_steps=true, max_step=0.1,
-)
-orbit = find_closed_orbit_4d(ring, beam)
+# linear optics
+qx, qy  = gettune(ring, beam)
+ξx, ξy  = getchrom(ring, beam)         # dQ/dδP about the off-momentum closed orbit
+tw      = twiss(ring, beam)            # β, α, μ, dispersion, αc, ξ at every element boundary
+tws     = twiss(ring, beam; slices=10) # the same, 10 points inside every element, for plots
+
+# an ensemble: 10 000 particles, 500 turns, on all Julia threads
+coords = matched_gaussian(10_000, optics4DUC(tw.betax[1], tw.alphax[1],
+                                              tw.betay[1], tw.alphay[1]);
+                          emitx=1e-9, emity=1e-10)
+track!(coords, ring, beam; nturns=500, threaded=true)
 ```
 
-The phase-space coordinates are
-`($x$, $p_x$, $y$, $p_y$, $z=s/\beta_0-ct$, $\delta_E=(E-E_0)/(P_0c)$)`.
-TrackPad does not store the relative momentum deviation
-`$\delta_P=(P-P_0)/P_0$`; only to first order is
-`$\delta_E=\beta_0\delta_P$`. Read `docs/src/conventions.md` before comparing
-results with another code.
+Coordinates are `(x, px, y, py, z, δE)` with `z = s/β₀ − ct` (positive for an
+early particle) and `δE = (E−E₀)/(P₀c)`. The *interface* — every `dp`
+argument, chromaticity, dispersion — speaks the relative momentum
+`δP = (P−P₀)/P₀` that MAD-X, elegant and AT use; only the tracked state stores
+`δE`. Read the [conventions page](https://MSU-Beam-Dynamics.github.io/TrackPad.jl/stable/conventions/)
+before comparing with another code.
 
-## Choose an API
+## What is in the box
 
-| Goal | API |
-|------|-----|
-| Track one particle through a line | `linepass` |
-| Track one particle for many turns | `ringpass` |
-| Track an `N x 6` CPU matrix with loss flags | `linepass!`, `ringpass!` |
-| Generate a matched Gaussian ensemble | `matched_gaussian`, `gaussian_distribution` |
-| Inspect covariance and emittances | `beam_covariance`, `projected_emittances`, `eigenemittances` |
-| Track a packed CPU/GPU batch | `GPULattice`, `batch_linepass!`, `batch_ringpass!` |
-| Scan lattice parameters lazily | `ParamSweepLattice`, `param_sweep_linepass!` |
-| Propagate entrance Twiss through a line | `transport_twiss` |
-| Compute periodic ring Twiss | `periodic_twiss` |
-| Compute ring tunes/chromaticity | `gettune`, `getchrom` |
-| Compute a line or ring map | `transfer_map` |
-| Compute one-turn maps and closed orbits | `one_turn_map`, `find_closed_orbit_4d` |
-| Read/write lattice files | `read_pals`, `write_pals`, `read_madx` |
-| Compute batched derivatives | `batch_jacobian!`, `batch_hessian_vector_product!` |
-| Compute a TPSA map | `tpsa_map` after `using PolySeries` |
-
-## Optional Features
-
-```julia
-# Apple GPU
-using TrackPad, Metal
-gl = gpu_adapt(ring, beam, MetalBackend())
-
-# NVIDIA GPU
-using TrackPad, CUDA
-gl = gpu_adapt(ring, beam, CUDABackend(); dtype=Float64)
-
-# Batched derivatives
-using TrackPad, Enzyme
-
-# TPSA maps
-using TrackPad, PolySeries
-```
-
-See `docs/src/gpu.md` for supported GPU elements and settings. Loading a weak
-dependency activates its TrackPad extension automatically.
+| | |
+|---|---|
+| **Tracking** | `track`, `track!` (one particle or an `N×6` matrix, one pass or many turns, serial or threaded, and on a packed `GPULattice`); `linepass`/`linepass!` for JuTrack-compatible single passes; `ParamSweepLattice` for lazily generated parameter scans |
+| **Elements** | drifts, quadrupoles, sextupoles, octupoles, thin multipoles, sector/rectangular/exact bends with AT-style or hard-edge fringes, RF/crab/accelerating cavities, solenoids, wigglers, correctors, patches, beam–beam (Bassetti–Erskine, synchro-beam slices), longitudinal wakes, space charge; turn-by-turn or real-time parameters via `timed` |
+| **Optics** | `gettune`, `getchrom`, `twiss` (rings and lines: Twiss, dispersion, αc, ξ; optional ξ₂, I1–I5, ∂Q/∂J; from TPSA maps by default or from tracking; `periodic_twiss`/`transport_twiss`), `one_turn_map`, `find_closed_orbit_4d/6d`, plus JuTrack-style `findm66`, `twissring` |
+| **Beams** | `Beam`; `matched_gaussian` / `gaussian_distribution` with exact finite-sample moments; `beam_covariance`, `projected_emittances`, `eigenemittances` |
+| **Maps & derivatives** | `tpsa_map`; `batch_jacobian!`, `batch_hessian_vector_product!`, `batch_hessian!` (Enzyme) |
+| **I/O** | `read_pals`, `write_pals`, `read_madx` |
 
 ## Documentation
 
-- `examples/README.md`: numbered, workflow-oriented notebook series
-- `docs/src/guide.md`: human-oriented workflow
-- `docs/src/conventions.md`: normative coordinates, units, and normalization
-- `docs/src/elements.md`: element catalog and constructors
-- `docs/src/io.md`: PALS and MAD-X lattice file I/O
-- `docs/src/gpu.md`: GPU, parameter sweeps, and batched derivatives
-- `docs/src/agent-guide.md`: compact contract for package-using AI agents
-- `AGENTS.md`: repository architecture and change rules for coding agents
-- `llms.txt`: short machine-readable package index
+The [manual](https://MSU-Beam-Dynamics.github.io/TrackPad.jl/stable/) has a
+getting-started guide, the normative physics and data conventions, the element
+catalogue, file I/O, GPU, performance and API reference pages. The
+[`examples/`](examples/) directory holds a numbered notebook series from a FODO
+quickstart through MAD-X import, TPSA, AD, wakes, matching, orbit and optics
+correction, and GPU parameter sweeps.
 
-## Testing
-
-Run the package test target, not `test/runtests.jl` directly, because the test
-target activates JuTrack, PolySeries, and Enzyme test dependencies:
+## Development
 
 ```bash
-julia --project=. -e 'using Pkg; Pkg.test()'
+git clone https://github.com/MSU-Beam-Dynamics/TrackPad.jl
+cd TrackPad.jl
+julia --project=. -e 'using Pkg; Pkg.test()'        # full suite
+julia --project=docs -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
+julia --project=docs docs/make.jl                    # build the manual
 ```
 
-Build documentation with:
+Run tests through `Pkg.test()` rather than `include("test/runtests.jl")`: the
+test target activates the JuTrack and Enzyme test dependencies, which
+`[sources]` resolves from GitHub together with PolySeries. CUDA hardware tests live in the
+separate `test/cuda` environment. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-```bash
-julia --project=docs docs/make.jl
-```
+## Citing
 
-CUDA hardware tests use the separate environment in `test/cuda`.
+If TrackPad contributes to published work, please cite it; the metadata is in
+[`CITATION.cff`](CITATION.cff) (GitHub's *Cite this repository* button renders
+it as BibTeX or APA).
 
-## Design Boundary
+## License
 
-TrackPad consumes one ordered `Lattice` and one `Beam`. A lattice has only an
-open-line (`periodic=false`) or closed-ring (`periodic=true`) boundary.
-Consumer-specific adapters own machine topology, route selection, source
-metadata, serialization, and result conversion.
+MIT — see [LICENSE](LICENSE).

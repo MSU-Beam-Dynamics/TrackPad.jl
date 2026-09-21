@@ -38,11 +38,11 @@ function run_cuda_case(::Type{T}) where T
     test_device_parity(actual, expected; rtol=rtol, atol=atol, label="$T linepass")
 
     expected_ring = copy(coords0)
-    batch_ringpass!(expected_ring, gl_cpu, 3)
+    track!(expected_ring, gl_cpu; nturns=3)
     coords_cuda = CUDA.CuArray(coords0)
-    CUDA.@sync batch_ringpass!(coords_cuda, gl_cuda, 3)
+    CUDA.@sync track!(coords_cuda, gl_cuda; nturns=3)
     test_device_parity(Array(coords_cuda), expected_ring;
-                       rtol=3rtol, atol=3atol, label="$T ringpass")
+                       rtol=3rtol, atol=3atol, label="$T multi-turn")
 
     strengths = CUDA.CuArray(collect(T, range(T(0.4), T(0.8); length=128)))
     drift_lengths = CUDA.CuArray(collect(T, range(T(0.6), T(0.8); length=128)))

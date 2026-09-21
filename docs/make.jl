@@ -18,7 +18,9 @@ makedocs(
         canonical        = "https://MSU-Beam-Dynamics.github.io/TrackPad.jl",
         edit_link        = "main",
         assets           = String[],
-        size_threshold   = nothing,
+        # api.md collects every docstring and is ~100 KB; that is intended.
+        size_threshold      = nothing,
+        size_threshold_warn = 256 * 2^10,
     ),
     pages = [
         "Home"        => "index.md",
@@ -28,16 +30,15 @@ makedocs(
             "Elements"        => "elements.md",
             "File I/O"        => "io.md",
             "GPU Acceleration" => "gpu.md",
+            "Performance"     => "performance.md",
             "Examples"        => "examples.md",
         ],
         "AI Agent Guide" => "agent-guide.md",
         "API Reference" => "api.md",
     ],
-    # Use :none during initial development; change to :exports once all
-    # exported symbols have docstrings.
-    checkdocs = :none,
+    # Every exported symbol must carry a docstring and appear in a page.
+    checkdocs = :exports,
     doctest   = true,
-    warnonly  = Documenter.except(:missing_docs),
 )
 
 deploydocs(

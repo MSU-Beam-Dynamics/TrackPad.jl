@@ -94,10 +94,10 @@ coords = MtlArray(zeros(Float32, N, 6))
 # ... fill coords with initial beam distribution ...
 
 # Track one turn (in-place)
-batch_linepass!(coords, gl)
+track!(coords, gl)
 
 # Multi-turn ring tracking
-batch_ringpass!(coords, gl, 1000)
+track!(coords, gl; nturns = 1000)
 
 # Copy results back to CPU
 result = Array(coords)
@@ -113,8 +113,7 @@ using TrackPad, CUDA
 gl     = gpu_adapt(lat, beam, CUDABackend(); dtype = Float64)
 coords = CuArray(zeros(Float64, N, 6))
 # ... fill ...
-batch_linepass!(coords, gl)
-batch_ringpass!(coords, gl, 1000)
+track!(coords, gl; nturns = 1000)
 ```
 
 ### CPU Backend
@@ -381,6 +380,12 @@ Benchmarks should compare the threaded element path, the flattened
 KernelAbstractions CPU path, one CUDA GPU, and a host-partitioned multi-GPU run.
 Compilation and input reset must be excluded from device-resident timings.
 
+!!! note
+    The "Threaded CPU element tracking" row predates the 0.2.0 fix that removed
+    a per-particle dynamic dispatch from `cpu_batch_linepass!`; that path is now
+    about 2.3x faster than shown. The GPU rows are unaffected. See the
+    [Performance](@ref performance_guide) page for current CPU figures.
+
 The 2026-07-22 benchmark used 1,000,000 Float64 particles, 100 FODO elements,
 five samples, 64 Julia threads on two AMD EPYC 7313 sockets, and four NVIDIA
 A100-SXM4-40GB GPUs:
@@ -401,8 +406,7 @@ than peak dedicated-node results.
 - **Workgroup size**: the default workgroup size is 256 threads.  For small
   particle counts (< 512) you may want to call the kernel directly with a
   smaller workgroup size.
-- **Multiple turns**: use `batch_ringpass!(coords, gl, nturns)` to make ring
-  intent explicit. The current implementation launches one fused-lattice
+- **Multiple turns**: `track!(coords, gl; nturns)` launches one fused-lattice
   kernel per turn.
 - **Memory layout**: coordinates are stored in Julia column-major `N×6`
   matrices, so adjacent particle threads access contiguous values for each

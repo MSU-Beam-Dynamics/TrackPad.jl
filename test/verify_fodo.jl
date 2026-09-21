@@ -68,9 +68,12 @@ try
     # Verification
     diff = norm(coords - particles_final_jutrack)
 
+    # TrackPad's drift evaluates the z update without subtracting two O(L)
+    # numbers; JuTrack's has ~ε·L of roundoff per drift, so the agreement is to
+    # JuTrack's roundoff, not to the bit.
     @testset "JuTrack vs TrackPad FODO Verification" begin
-        @test diff < 1e-15
-        @test isapprox(coords, particles_final_jutrack, atol=1e-15)
+        @test diff < 1e-14
+        @test isapprox(coords, particles_final_jutrack, atol=1e-14)
     end
 finally
     JuTrack.use_exact_beti = old_exact_beti

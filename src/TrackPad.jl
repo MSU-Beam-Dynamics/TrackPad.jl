@@ -1,15 +1,22 @@
 """
-    TrackPad.jl
+    TrackPad
 
-High-performance particle accelerator tracking engine.
+Symplectic 6-D particle tracking and linear optics for accelerator lattices.
 
-TrackPad is designed for:
-- Automatic Differentiation (AD) support via parametric types
-- GPU acceleration via KernelAbstractions.jl
-- Allocation-free tracking kernels using StaticArrays
-- TPSA (Truncated Power Series Algebra) for high-order maps
+The core is a set of allocation-free element kernels on `SVector{6}`
+coordinates `(x, px, y, py, z, δE)` that are generic in the coordinate type, so
+one implementation serves scalar `Float64`/`Float32` tracking, truncated
+power series maps (PolySeries `CTPS` coordinates, the backend of the default
+optics method), automatic differentiation (Enzyme, via `TrackPadEnzymeExt`)
+and packed multi-particle tracking on CPU threads or GPUs (KernelAbstractions;
+`TrackPadCUDAExt`, `TrackPadMetalExt`).
 
-Migrated from JuTrack.jl with enhanced architecture for modern computing.
+Start with `Beam`, `Lattice`, `track`/`track!`, and the optics functions
+`gettune`, `getchrom`, `twiss` (`periodic_twiss`/`transport_twiss`). Ring optics are
+computed from Taylor maps by default (`method=:tpsa`) or from finite
+differences of tracking (`method=:fd`). Physics and data conventions are
+documented in the manual; the interface speaks the relative momentum
+`δP = (P-P0)/P0` while the tracked state stores `δE`.
 """
 module TrackPad
 
@@ -17,6 +24,7 @@ module TrackPad
 using LinearAlgebra
 using StaticArrays
 using Adapt
+using PolySeries
 
 # Element definitions (types and constructors)
 include("elements.jl")
@@ -39,8 +47,9 @@ include("optics.jl")
 # Matched macroparticle distributions and moment diagnostics
 include("distributions.jl")
 
-# TPSA map API (implementation in ext/TrackPadPolySeriesExt.jl)
+# TPSA map API and the PolySeries backend (default optics method)
 include("tpsa.jl")
+include("tpsa_polyseries.jl")
 
 # Lattice I/O: PALS YAML and MAD-X readers/writers
 include("io.jl")
@@ -67,15 +76,15 @@ export TimeContext, TimeFunction, TimeDependentParam, Time, RealTime, Turn
 export teval, time_lower, static_timecheck
 export TimeVaryingElement, timed, materialize
 
-export Beam, Lattice, isperiodic, refine_lattice
-export pass!, linepass, linepass!, ringpass, ringpass!
+export Beam, kinetic_energy, p0c, Lattice, isperiodic, refine_lattice
+export pass!, track, track!, linepass, linepass!
 export total_length, spos, findelem, get_length, materialize_lattice
 export LatticeGlyph, lattice_plot_data, plot_lattice!
 export AbstractOptics, AbstractOptics2D, AbstractOptics4D, optics2D, optics4DUC
-export TwissLineResult, TransportTwissResult, DispersionLineResult
+export TwissResult
 export transfer_map, one_turn_map, findm66, fastfindm66, findm66_refpts, fastfindm66_refpts
 export twissPropagate, periodicEdwardsTengTwiss, twissring
-export gettune, getchrom, periodic_twiss, periodic_dispersion, transport_twiss, twissline
+export gettune, getchrom, twiss, periodic_twiss, transport_twiss, twissline
 export find_closed_orbit_4d, find_closed_orbit_6d
 export gaussian_distribution, matched_gaussian, matched_covariance
 export match_moments!, beam_covariance, projected_emittances, eigenemittances
@@ -85,7 +94,7 @@ export tpsa_map
 # GPU acceleration
 export GPULattice, ParamSweepLattice
 export gpu_adapt
-export batch_linepass!, batch_ringpass!, param_sweep_linepass!
+export batch_linepass!, param_sweep_linepass!
 export cpu_batch_linepass!
 
 # Automatic differentiation (implemented by TrackPadEnzymeExt)
@@ -117,8 +126,24 @@ export batch_jacobian!, batch_hessian_vector_product!, batch_hessian!
 # Physical constants
 export M_ELECTRON, M_PROTON
 
-# Stubs for TPSA extension (TrackPadPolySeriesExt)
+# TPSA utilities (implemented in tpsa_polyseries.jl)
+"""
+    polyseries_variables(T; order=1) -> SVector{6,CTPS{T}}
+    polyseries_variables(x0::SVector{6,T}; order=1) -> SVector{6,CTPS{T}}
+
+The six TPSA coordinate variables about the origin, or about the expansion
+point `x0`, truncated at `order`. Sets the global PolySeries descriptor to
+`(6, order)`.
+"""
 function polyseries_variables end
+
+"""
+    polyseries_one_turn_map(lat, beam; r0=zeros, order=1) -> SVector{6,CTPS}
+
+Track the TPSA variables from [`polyseries_variables`](@ref) once through `lat`.
+Equivalent to [`tpsa_map`](@ref) with `closed_orbit = r0`; kept for the
+JuTrack-style call signature.
+"""
 function polyseries_one_turn_map end
 export polyseries_variables, polyseries_one_turn_map
 

@@ -106,26 +106,17 @@ end
     )
     @test length(imported_twiss.s) > length(imported) + 1
     @test all(isfinite, (imported_twiss.tunex, imported_twiss.tuney))
-    imported_dispersion = periodic_dispersion(
-        imported, imported_beam;
-        sample_integrator_steps=true, max_step=0.1,
-    )
-    @test imported_dispersion.s == imported_twiss.s
-    @test maximum(abs, imported_dispersion.dx) > 0
-    @test isapprox(
-        imported_dispersion.dx[1], imported_dispersion.dx[end]; atol=1e-12,
-    )
-    @test isapprox(
-        imported_dispersion.dy[1], imported_dispersion.dy[end]; atol=1e-12,
-    )
+    @test maximum(abs, imported_twiss.dx) > 0
+    @test isapprox(imported_twiss.dx[1], imported_twiss.dx[end]; atol=1e-12)
+    @test isapprox(imported_twiss.dy[1], imported_twiss.dy[end]; atol=1e-12)
 
     madx_notebook = read(
         joinpath(EXAMPLES_DIR, "01_madx_import.ipynb"), String,
     )
     for calculation in (
         "periodic_twiss", "sample_integrator_steps=true", "max_step=0.10",
-        "getchrom", "periodic_dispersion", "plot_lattice!",
-        "dispersion.dx", "dispersion.dy",
+        "getchrom", "plot_lattice!",
+        "tw.dx", "tw.dy",
         "tw.betax", "tw.betay", "tw.alphax", "tw.alphay",
     )
         @test occursin(calculation, madx_notebook)

@@ -4,11 +4,17 @@ CurrentModule = TrackPad
 
 # API Reference
 
+```@docs
+TrackPad
+```
+
 ## Beam
 
 ```@docs
 Beam
 Beam(energy::T; mass::T, charge::T) where T
+kinetic_energy
+p0c
 beti
 M_ELECTRON
 M_PROTON
@@ -24,6 +30,21 @@ match_moments!
 beam_covariance
 projected_emittances
 eigenemittances
+```
+
+## Element Type Hierarchy
+
+Concrete elements are documented on the [Elements](@ref elements_guide) page;
+these are the abstract parents used for dispatch and for user extensions.
+
+```@docs
+AbstractElement
+AbstractMagnet
+AbstractDrift
+AbstractCavity
+AbstractTransferMap
+AbstractTransverseMap
+AbstractLongitudinalRFMap
 ```
 
 ## Lattice
@@ -43,10 +64,10 @@ materialize_lattice
 ### High-Level Interface
 
 ```@docs
+track
+track!
 linepass
 linepass!
-ringpass
-ringpass!
 ```
 
 ### Low-Level Interface
@@ -74,8 +95,8 @@ AbstractOptics2D
 AbstractOptics4D
 optics2D
 optics4DUC
-TwissLineResult
-TransportTwissResult
+TwissResult
+transition_gamma
 refine_lattice
 ```
 
@@ -93,8 +114,8 @@ findm66_refpts
 ### Twiss Analysis
 
 ```@docs
+twiss
 periodic_twiss
-periodic_dispersion
 transport_twiss
 twissline
 twissring
@@ -119,14 +140,26 @@ find_closed_orbit_6d
 find_closed_orbit_4d
 ```
 
+### Momentum Convention
+
+The optics interface takes and returns relative momentum ``\delta_P``, while
+the tracked state stores ``\delta_E``; see [Conventions](@ref conventions).
+These exact conversions are what the optics functions apply internally.
+
+```@docs
+deltap_from_deltae
+deltae_from_deltap
+```
+
 ## TPSA Maps
 
-!!! note "Extension package"
-    `tpsa_map` is provided by the `TrackPadPolySeriesExt` extension and is
-    activated when `PolySeries` is loaded.
+PolySeries is a dependency of TrackPad: the TPSA utilities below and the
+default `method=:tpsa` of the optics functions are always available.
 
 ```@docs
 tpsa_map
+polyseries_variables
+polyseries_one_turn_map
 ```
 
 ## GPU Acceleration
@@ -140,7 +173,6 @@ GPULattice
 ParamSweepLattice
 gpu_adapt
 batch_linepass!
-batch_ringpass!
 param_sweep_linepass!
 cpu_batch_linepass!
 batch_jacobian!

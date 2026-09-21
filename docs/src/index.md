@@ -4,43 +4,50 @@ CurrentModule = TrackPad
 
 # TrackPad.jl
 
-**TrackPad.jl** is a general Julia engine for fast local accelerator models. It
-provides single- and multi-particle tracking, linear optics, time-dependent
-elements, PALS/MAD-X interchange, and optional GPU, Enzyme, and PolySeries
-extensions.
+**TrackPad.jl** is a Julia library for symplectic particle tracking and linear
+optics of accelerator lattices. It supports symplectic tracking, CPU and GPU batches for particle tracking, automatic differentiation and truncated-power-series tracking.
 
-Start with [Getting Started](@ref user_guide). Before comparing results with
-another code, read the normative [Physics and Data Conventions](@ref conventions).
+Start with [Getting Started](@ref user_guide). To understand the results and compare with
+another code, read the [Physics and Data Conventions](@ref conventions).
 AI agents and integration tools should also read the [Agent Guide](@ref agent_guide).
 
 ## Features
 
-- 6D symplectic tracking with exact Hamiltonian by default
-- Canonical elements including bends, multipoles, RF cavities, solenoids,
-  beam-beam, space-charge, wake, and wiggler models
-- **GPU-accelerated tracking** via [KernelAbstractions.jl](https://github.com/JuliaGPU/KernelAbstractions.jl):
-  multi-particle batch tracking and parameter sweeps on Metal or CUDA
-- Batched Jacobians and second-order derivatives through Enzyme
-- Optional PolySeries TPSA transfer maps
-- Linear optics: Twiss parameters, tunes, chromaticity, closed orbit
-- Time-dependent (turn-by-turn or real-time) element parameters
-- PALS branch compilation and a documented subset of MAD-X
+- Symplectic 6-D tracking in canonical coordinates ``(x,p_x,y,p_y,z,\delta_E)``
+  with the exact drift Hamiltonian; 
+- Supports multipoles magnets, RF and crab cavities, solenoids, wigglers, correctors,
+  beam–beam effect, longitudinal wakes and space charge effects
+- Linear optics of coupled and uncoupled lattices, in 4-D and 6-D (in progress)
+- Multi-particle tracking on CPU threads or on NVIDIA/Apple GPUs from one
+  packed lattice; lazily generated parameter sweeps
+- Support time-dependent parameters of the element for ramping study
+- Support the Particle Accelerator Lattice Standard (PALS) and a documented MAD-X subset for lattice interchange
 
 ## Installation
 
-TrackPad is currently used as a local/development package:
+TrackPad is not yet in the General registry; install it from GitHub:
 
 ```julia
 using Pkg
-Pkg.develop(PackageSpec(path = "/path/to/TrackPad"))
+Pkg.add(url = "https://github.com/MSU-Beam-Dynamics/TrackPad.jl")
 ```
 
-Or, if you are working inside the repository:
+TrackPad depends on [PolySeries.jl](https://github.com/MSU-Beam-Dynamics/PolySeries.jl)
+(the truncated-power-series backend of the default optics method), which is
+also unregistered for now: add it first with
+`Pkg.add(url = "https://github.com/MSU-Beam-Dynamics/PolySeries.jl")`.
 
-```julia
-using Pkg
-Pkg.activate(".")
-```
+Optional capabilities are activated by loading their companion package
+alongside TrackPad — nothing else to configure:
+
+| capability | load | notes |
+|---|---|---|
+| batched derivatives | `using Enzyme` | registered |
+| NVIDIA GPU | `using CUDA` | `Float32`/`Float64` |
+| Apple GPU | `using Metal` | `Float32` only |
+| lattice plots | `using CairoMakie` (or another Makie backend) | `plot_lattice!` |
+
+Julia 1.12 or newer is required.
 
 ## Quick Start
 
@@ -75,6 +82,8 @@ Pages = [
     "elements.md",
     "io.md",
     "gpu.md",
+    "performance.md",
+    "examples.md",
     "agent-guide.md",
     "api.md",
 ]

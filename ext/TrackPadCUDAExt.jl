@@ -23,8 +23,8 @@ lat  = Lattice([Quadrupole(0.5, 1.2; num_int_steps=4),
 N = 100_000
 coords = CUDA.randn(Float64, N, 6)
 gl_cuda = gpu_adapt(lat, beam, CUDABackend(); dtype=Float64)
-batch_linepass!(coords, gl_cuda)
-batch_ringpass!(coords, gl_cuda, 100)
+track!(coords, gl_cuda)
+track!(coords, gl_cuda; nturns=100)
 ```
 """
 module TrackPadCUDAExt

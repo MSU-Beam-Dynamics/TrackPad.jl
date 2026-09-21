@@ -26,7 +26,7 @@ end
 function Quadrupole(L, k1;
                     name::Union{Symbol, String} = :QUAD,
                     polynom_a = nothing, polynom_b = nothing,
-                    max_order::Int = 1, num_int_steps::Int = 10, rad::Int = 0,
+                    max_order::Int = 1, num_int_steps::Int = 4, rad::Int = 0,
                     fringe_entrance::Int = 0, fringe_exit::Int = 0,
                     t1 = nothing, t2 = nothing,
                     r1 = nothing, r2 = nothing,

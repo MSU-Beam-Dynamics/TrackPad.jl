@@ -12,30 +12,32 @@ the normative [Physics and Data Conventions](@ref conventions).
 
 | User intent | Preferred public API | Result |
 |-------------|----------------------|--------|
-| Track one initial condition through a line | `linepass(lat, r0, beam)` | `SVector{6}` |
-| Track one initial condition for turns | `ringpass(lat, r0, beam, nturns)` | `SVector{6}` |
-| Track an `N x 6` CPU matrix with explicit loss flags | `linepass!`, `ringpass!` | mutates matrix and flags |
+| Track one initial condition through a line or for `nturns` turns | `track(lat, r0, beam; nturns)` | `SVector{6}`, `NaN` if lost |
+| Track an `N x 6` CPU matrix, optionally on Julia threads | `track!(coords, lat, beam; nturns, lost, threaded)` | mutates matrix; lost rows become `NaN` |
+| Track with JuTrack's loss convention (flags, coordinates kept) | `linepass`, `linepass!` | single pass only |
 | Generate a Gaussian with a target `4 x 4`/`6 x 6` covariance | `gaussian_distribution` | `N x 4`/`N x 6` matrix |
 | Generate from Twiss, emittance, and longitudinal responses | `matched_gaussian` | `N x 6` matrix |
 | Measure covariance or emittances | `beam_covariance`, `projected_emittances`, `eigenemittances` | matrices/vectors |
-| Track a packed batch on CPU/GPU | `batch_linepass!`, `batch_ringpass!` | mutates device/host matrix |
+| Track a packed batch on CPU/GPU | `track!(coords, gpulattice; nturns)` | mutates device/host matrix |
 | Run correlated or Monte Carlo settings | `ParamSweepLattice(...; mode=:aligned)` | one result per trial |
 | Run a systematic parameter grid | `ParamSweepLattice(...; mode=:cartesian)` | Cartesian product |
-| Compute tunes or chromaticity | `gettune`, `getchrom` | two-value tuple |
-| Propagate supplied entrance Twiss | `transport_twiss` | `TransportTwissResult` |
-| Compute periodic uncoupled Twiss | `periodic_twiss` | `TwissLineResult` |
+| Compute tunes or chromaticity | `gettune`, `getchrom` | two-value tuple (``\delta_P`` derivative, closed orbit) |
+| Compute periodic ring optics (Twiss, dispersion, αc, ξ; optional ξ₂, I1–I5, ∂Q/∂J) from Taylor maps | `twiss` / `periodic_twiss` | `TwissResult` |
+| Propagate entrance optics (β, α, phase, dispersion) through a line, or chain lines | `twiss(...; entrance)` / `transport_twiss` | `TwissResult` (`periodic=false`) |
+| Same from finite differences of tracking (e.g. a lattice with `LBend`) | `twiss(...; method=:fd)` | `TwissResult` |
+| Smooth optics inside thick elements for plotting | `twiss(...; slices=10)` or `max_step=0.1` | `TwissResult` on the refined lattice |
 | Compute a first-order map | `one_turn_map` or `findm66` | `6 x 6` matrix |
 | Compute closed orbit | `find_closed_orbit_4d/6d` | static vector |
 | Read PALS or MAD-X | `read_pals`, `read_madx` | `(Lattice, Beam)` |
 | Compute derivatives for many particles | Enzyme batch APIs | preallocated arrays |
-| Compute a TPSA map | `tpsa_map` with PolySeries loaded | six TPSA outputs |
+| Compute a TPSA map | `tpsa_map` | six TPSA outputs |
 
 ## Minimal Correct Model
 
 ```julia
 using StaticArrays, TrackPad
 
-beam = Beam(3.0e9)  # kinetic energy [eV]
+beam = Beam(3.0e9)  # total energy [eV]; Beam(kinetic=K, mass=m) for low-energy ions
 lat = Lattice(AbstractElement[
     Drift(1.0; name=:D1),
     Quadrupole(0.3, 0.7; name=:QF),
@@ -52,14 +54,40 @@ Do not generate `Quadrupole(L; k1=...)`; `k1` is positional. Use an
 Use `periodic=true` only when the lattice end closes at its start. An omitted
 keyword means an open line.
 
+## Writing Generic Kernels
+
+Element kernels are generic in the coordinate type (`SVector{6,S}`): the same
+code runs on `Float64`, `Float32`, `ForwardDiff`/`Enzyme` duals and PolySeries
+`CTPS` truncated power series. Two rules keep that working.
+
+Build scalars from the *element's* numeric type `T`, never from the coordinate
+type `S`. `one(T)` and `zero(T)` are fine; `one(S)` and `zero(S)` are not,
+because `CTPS` has no type-level `one`/`zero` — a polynomial needs a
+descriptor, and the type does not carry one. PolySeries provides the instance
+forms `zero(p)` and `one(p)`, built over `p`'s descriptor, so use those if you
+need an identity shaped like a coordinate you already hold. The same applies to
+default arguments: `beti::Real = one(S)` silently breaks TPSA tracking, while
+`beti::Real = 1.0` does not. For the same reason `zeros(CTPS{T}, n)` and
+reductions over an empty collection cannot work; reductions over a non-empty
+one are fine.
+
+Guard every branch that inspects a coordinate. Ordered comparisons, `isnan`
+and aperture tests are meaningless for a series or a dual, so loss checks go
+through `_check_pz2`, `_check_tiny`, `_safe_clamp` and `check_lost`, which are
+no-ops for non-`Real` coordinates.
+
 ## Required Assumptions to State
 
 When producing analysis code or numerical comparisons, state:
 
-1. reference particle, kinetic energy, mass, and signed charge;
+1. reference particle, total energy (or kinetic energy / momentum, if given that way), mass, and signed charge;
 2. coordinate order and units;
 3. whether RF is active and how phase/lag was converted;
-4. finite-difference steps and forward/centered chromaticity choice;
+4. finite-difference steps (or `method=:tpsa`) and the chromaticity
+   conventions in use — centered/one-sided, ``\delta_P`` vs. ``\delta_E``
+   (`wrt`, default ``\delta_P``), and that TrackPad measures about the
+   off-momentum closed orbit (a code that launches on-axis measures a
+   different quantity once sextupoles are present);
 5. CPU/GPU backend and precision;
 6. integration steps for thick nonlinear elements; and
 7. whether optics assumes an uncoupled periodic lattice.
@@ -135,6 +163,6 @@ When documentation and generated assumptions conflict, use this order:
 1. `docs/src/conventions.md` for published physics/data conventions;
 2. public docstrings and implementation in `src`;
 3. focused tests in `test` for verified numerical behavior;
-4. migration/status documents for historical context only.
+4. `CHANGELOG.md` for what changed between versions.
 
 Repository-changing agents must also follow `AGENTS.md` at the repository root.

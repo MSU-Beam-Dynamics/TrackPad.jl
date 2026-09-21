@@ -335,13 +335,15 @@ function run_example(; check::Bool = true, verbose::Bool = true)
         mid_qd = h_function(optics.mid_qd, dispersion.mid_qd),
     )
 
-    # getchrom differentiates with respect to delta_E. Convert the result to
-    # the note's momentum convention: dQ/d(delta_P) = beta0*dQ/d(delta_E).
+    # getchrom defaults to the note's momentum convention, dQ/d(delta_P).
+    chrom_momentum = getchrom(
+        lattices.mid_qf, beam;
+        centered = true, dpp = 1.0e-5,
+    )
     chrom_energy = getchrom(
         lattices.mid_qf, beam;
-        centered = true, closed_orbit = true, dpp = 1.0e-5,
+        centered = true, dpp = 1.0e-5, wrt = :deltae,
     )
-    chrom_momentum = beam.beta .* chrom_energy
 
     bend_length = L1 - Lq
     rho = bend_length / theta
@@ -418,7 +420,7 @@ function run_example(; check::Bool = true, verbose::Bool = true)
 
     if verbose
         println("FODO cell with finite quadrupoles and sector dipoles")
-        println("  beam kinetic energy [GeV]       = ", beam.energy / 1e9)
+        println("  beam total energy [GeV]         = ", beam.energy / 1e9)
         println("  half-cell length L1 [m]         = ", L1)
         println("  quadrupole focal length f [m]   = ", focal_length)
         println("  bend angle per half cell [rad]  = ", theta)

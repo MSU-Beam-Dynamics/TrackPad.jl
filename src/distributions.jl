@@ -230,11 +230,13 @@ Twiss parameters. `longitudinal` may supply a `2 x 2` covariance in
 `(z, delta_E)` and overrides `emitz`, `betaz`, and `alphaz`.
 
 The four-component response vectors act on the transverse coordinates
-`(x, px, y, py)`: `dispersion` is the derivative with respect to `delta_E`,
-and `crab_dispersion` is the derivative with respect to `z`. When omitted,
-ordinary dispersion comes from the `eta`/`etap` fields of `optics` and crab
-dispersion is zero. These are TrackPad energy-coordinate responses; MAD-X
-momentum dispersion must first be divided by the reference `beta`.
+`(x, px, y, py)`: `dispersion` is the derivative with respect to the stored
+coordinate `δE`, and `crab_dispersion` the derivative with respect to `z`. When
+omitted, ordinary dispersion comes from the `eta`/`etap` fields of `optics` and
+crab dispersion is zero. The covariance lives in the stored coordinates, so it
+needs the `δE` response: use the `dx`, `dpx`, `dy`, `dpy` of
+`periodic_twiss(lat, beam; wrt=:deltae)`, or divide a `δP` dispersion (MAD-X,
+or `periodic_twiss`'s default) by the reference `β0`.
 """
 function matched_covariance(optics::optics4DUC;
                             emitx, emity, emitz=nothing,

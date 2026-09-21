@@ -134,7 +134,7 @@ end
     @test lattice[6].lag ≈ 0.25 * 2.99792458e8 / 5.0e8
     @test beam.mass == M_ELECTRON
     @test beam.charge == -1.0
-    @test beam.energy ≈ sqrt((3.0e9)^2 + M_ELECTRON^2) - M_ELECTRON
+    @test beam.energy ≈ sqrt((3.0e9)^2 + M_ELECTRON^2)   # pc_ref -> total energy
 
     rm(path; force=true)
 end
@@ -180,6 +180,28 @@ end
     @test lattice[1] isa Drift
     @test lattice[1].L == 0.4
 
+    rm(path; force=true)
+end
+
+@testset "PALS wiggler is an unsupported element with a clear message" begin
+    # PALS carries no wiggler parameter group TrackPad maps; previously this
+    # branch called `Wiggler(len)` and died on an unrelated "lw must be
+    # positive" error.
+    path = write_fixture("""
+    PALS:
+      facility:
+        - wig:
+            kind: Wiggler
+            length: 2.0
+        - line:
+            kind: BeamLine
+            line: [wig]
+    """)
+    err = try; read_pals(path); nothing; catch e; e; end
+    @test err isa ArgumentError
+    @test occursin("wiggler", err.msg) && occursin("Wiggler(", err.msg)
+    lattice, _ = @test_logs (:warn, r"wiggler") read_pals(path; strict=false)
+    @test lattice[1] isa Drift && lattice[1].L == 2.0
     rm(path; force=true)
 end
 
@@ -261,7 +283,7 @@ end
     @test lattice[2].energy == beam.energy
     @test beam.mass == M_PROTON
     @test beam.charge == 1.0
-    @test beam.energy ≈ sqrt((3.0e9)^2 + M_PROTON^2) - M_PROTON
+    @test beam.energy ≈ sqrt((3.0e9)^2 + M_PROTON^2)     # PC -> total energy
 
     rm(path; force=true)
 end
@@ -288,7 +310,7 @@ end
         cavity, SVector(0.0, 0.0, 0.0, 0.0, -dz, 0.0), inv(beam.beta),
     )
     rf_slope = (plus[6] - minus[6]) / (2dz)
-    p0c = beam.beta * (beam.energy + beam.mass)
+    p0c = TrackPad.p0c(beam)
     expected = -cavity.charge * cavity.volt / p0c *
                (2π * cavity.freq / 2.99792458e8)
     @test rf_slope > 0
@@ -324,7 +346,7 @@ end
     @test lattice[3] isa SBend
     @test lattice[3].L ≈ 1.816 * -0.0392699 / (2sin(-0.0392699 / 2))
     @test lattice[3].num_int_steps == 24
-    @test beam.energy ≈ 9.0e9 - M_ELECTRON
+    @test beam.energy ≈ 9.0e9                            # ENERGY is total
     @test_throws ArgumentError read_madx(path; num_int_steps=0)
 
     rm(path; force=true)

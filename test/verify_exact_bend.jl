@@ -49,9 +49,13 @@ try
     # Verification
     diff = norm(coords - particles_final_jutrack)
 
+    # JuTrack's exact-bend body forms x_new = (pz_new − pzmx cos + px sin − 1)/h
+    # directly and loses ~ε/h ≈ 1e-15 m per step; TrackPad's `exact_bend_body`
+    # is the same algebra without the O(1) cancellation, so the codes agree to
+    # JuTrack's roundoff.
     @testset "JuTrack vs TrackPad ExactSBend Verification" begin
-        @test diff < 1e-15
-        @test isapprox(coords, particles_final_jutrack, atol=1e-15)
+        @test diff < 1e-13
+        @test isapprox(coords, particles_final_jutrack, atol=1e-13)
     end
 finally
     JuTrack.use_exact_beti = old_exact_beti

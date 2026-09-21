@@ -1,8 +1,8 @@
 # =============================================================================
 # TPSA (Truncated Power Series Algebra) API
 #
-# The actual implementation lives in ext/TrackPadPolySeriesExt.jl and is
-# loaded automatically when PolySeries.jl is loaded alongside TrackPad.
+# The implementation lives in src/tpsa_polyseries.jl (PolySeries CTPS
+# coordinates through the generic kernels).
 # =============================================================================
 
 """
@@ -13,9 +13,7 @@
 Compute the Taylor transfer map of `lat` up to polynomial `order` about
 `closed_orbit` (zero orbit when `nothing`).
 
-Requires `PolySeries.jl` to be loaded:
 ```julia
-using TrackPad, PolySeries
 M = tpsa_map(lat, beam; order = 2)
 ```
 

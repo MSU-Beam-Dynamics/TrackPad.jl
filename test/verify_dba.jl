@@ -36,7 +36,9 @@ D_S = Drift(0.5; name="D_S")
 
 angle_val = pi/9
 # Note: JuTrack RBEND sets e1=e2=angle/2. We do the same here.
-B_DBA = SBend(1.0, angle_val, angle_val/2, angle_val/2; name="B_DBA")
+# JuTrack SBEND uses 10 integration steps by default; TrackPad now defaults
+# to 4, so the parity model is pinned explicitly.
+B_DBA = SBend(1.0, angle_val, angle_val/2, angle_val/2; name="B_DBA", num_int_steps=10)
 
 # TrackPad Quadrupole and JuTrack KQUAD both use k1 directly.
 # k1 = 1.5 for QF, -1.2 for QD.
@@ -71,15 +73,17 @@ try
     lost_flags = zeros(Int, nparticles)
 
     # Tracking
-    beam = Beam(energy_val)
+    beam = jutrack_beam(energy_val)
     linepass!(coords, line_dba, beam, lost_flags)
 
     # Verification
     diff = norm(coords - particles_final_jutrack)
 
+    # Agreement is to JuTrack's roundoff (its drift z update subtracts two
+    # O(L) numbers; TrackPad's is cancellation-free), not to the bit.
     @testset "JuTrack vs TrackPad DBA Verification" begin
-        @test diff < 1e-15
-        @test isapprox(coords, particles_final_jutrack, atol=1e-15)
+        @test diff < 1e-14
+        @test isapprox(coords, particles_final_jutrack, atol=1e-14)
     end
 finally
     JuTrack.use_exact_beti = old_exact_beti

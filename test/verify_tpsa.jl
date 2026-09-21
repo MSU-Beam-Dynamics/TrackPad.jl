@@ -1,5 +1,6 @@
 using Test
 using TrackPad
+Base.include(@__MODULE__, joinpath(@__DIR__, "convention_helpers.jl"))
 using PolySeries
 using StaticArrays
 using LinearAlgebra
@@ -35,7 +36,7 @@ QF = Quadrupole(L_q,  k1; num_int_steps=10)
 QD = Quadrupole(L_q, -k1; num_int_steps=10)
 D  = Drift(L_d)
 ring = Lattice([QF, D, QD, D]; periodic=true)
-beam = Beam(3.0e9)
+beam = jutrack_beam(3.0e9)   # JuTrack TPSA calls use E0=3.0e9 (kinetic)
 
 # JuTrack lattice (KQUAD matches TrackPad Quadrupole; same NumIntSteps)
 const line_jt = [
@@ -193,7 +194,7 @@ end
 # chromatic terms (dispersion, ∂py/∂δ) that only show up with a nonzero
 # fringe-field integral.
 
-const tpsa_elem_beam = Beam(3.0e9)
+const tpsa_elem_beam = jutrack_beam(3.0e9)
 
 function tpsa_vs_fd(elem; atol=1e-6)
     lat = Lattice(AbstractElement[elem])
@@ -217,16 +218,64 @@ end
                            fringe_bend_entrance=3, fringe_bend_exit=3, num_int_steps=10))
     # Elements served by the generic core kernels.
     @test tpsa_vs_fd(Marker())
+    # Two-argument `pass!` must not default `beti` from the coordinate type:
+    # CTPS has no type-level `one`/`zero` (a polynomial needs a descriptor,
+    # which the type does not carry), only the instance methods.
+    let rc = SVector{6,CTPS{Float64}}(ntuple(i -> CTPS(0.0, i, 6, 1), 6))
+        @test pass!(Marker(), rc) === rc
+        @test_throws MethodError one(CTPS{Float64})
+        @test iszero(zero(rc[1])) && !iszero(one(rc[1]))
+    end
     @test tpsa_vs_fd(Patch(x_pitch=0.01, y_pitch=-0.02, tilt=0.1, z_offset=2e-3, t_offset=1e-12))
     @test tpsa_vs_fd(Translation(0.0; dx=1.0e-3, dy=-2.0e-3, ds=3.0e-3))
     @test tpsa_vs_fd(YRotation(0.0; angle=0.03))
     @test tpsa_vs_fd(ExactSBend(0.9, angle_val, angle_val/2, angle_val/2;
                                 fringe_bend_entrance=0, fringe_bend_exit=0, num_int_steps=10))
+    # default hard-edge dipole fringe (needs atan on CTPS)
+    @test tpsa_vs_fd(ExactSBend(0.9, angle_val, angle_val/2, angle_val/2; num_int_steps=10))
+    @test tpsa_vs_fd(ExactSBend(0.9, angle_val; num_int_steps=10))
     @test tpsa_vs_fd(Solenoid(0.5, 0.8))
     @test tpsa_vs_fd(Corrector(0.4, 1.5e-4, -2.2e-4))
 end
 
 @testset "TPSA rejects maps it cannot represent with a clear error" begin
-    @test_throws ArgumentError tpsa_map(Lattice(AbstractElement[ExactSBend(0.9, 0.15)]), tpsa_elem_beam)
     @test_throws ArgumentError tpsa_map(Lattice(AbstractElement[LBend(0.9, 0.15)]), tpsa_elem_beam)
+end
+
+@testset "Ring optics through Taylor maps (method=:tpsa)" begin
+    pbeam = Beam(kinetic=1.0e9, mass=M_PROTON, charge=1.0)
+    cell = AbstractElement[
+        Quadrupole(0.5, 0.9), Drift(0.6), SBend(1.2, 2π/40; num_int_steps=10), Drift(0.6),
+        Sextupole(0.2, 3.0), Drift(0.4), Corrector(0.0, 2e-5, -1e-5),
+        Quadrupole(0.5, -0.9), Drift(0.6), SBend(1.2, 2π/40; num_int_steps=10), Drift(0.6),
+        Sextupole(0.2, -3.0), Drift(0.4),
+    ]
+    arc = Lattice(vcat([copy(cell) for _ in 1:20]...); periodic=true)
+    fd = periodic_twiss(arc, pbeam; max_step=0.05, second_order=true, radiation_integrals=true, method=:fd)
+    tp = periodic_twiss(arc, pbeam; max_step=0.05, second_order=true, radiation_integrals=true)   # default method
+    @test tp.method === :tpsa
+    # exact Jacobians vs finite differences: agreement at the FD noise level
+    @test tp.tunex ≈ fd.tunex atol=1e-10
+    @test tp.tuney ≈ fd.tuney atol=1e-10
+    @test tp.betax ≈ fd.betax rtol=1e-8
+    @test tp.dx ≈ fd.dx atol=1e-8       # FD Jacobian roundoff ε/h per piece, ~1000 pieces
+    @test tp.alphac ≈ fd.alphac rtol=1e-7
+    @test tp.radiation.I5 ≈ fd.radiation.I5 rtol=1e-8
+    @test tp.chromx ≈ fd.chromx rtol=1e-5
+    @test tp.chromy ≈ fd.chromy rtol=1e-5
+    @test tp.chrom2x ≈ fd.chrom2x rtol=1e-3
+    # the analytic (no finite-difference step) chromaticity is the limit of the
+    # finite-difference one as its step shrinks
+    # (truncation ∝ dpp² down to the ~3e-6 finite-difference floor)
+    ξt = getchrom(arc, pbeam; method=:tpsa)
+    errs = [abs(getchrom(arc, pbeam; centered=true, dpp=d, method=:fd)[1] - ξt[1]) for d in (1e-3, 1e-4, 1e-6)]
+    @test errs[1] > 10 * errs[2]
+    @test errs[end] < 5e-6
+    # amplitude detuning from the order-3 map matches tracking
+    beam = Beam(3.0e9)
+    fodo = AbstractElement[Quadrupole(0.5, 0.95), Drift(1.0), Quadrupole(0.5, -0.80), Drift(1.0)]
+    oring = Lattice(vcat([Octupole(0.01, 2000.0; num_int_steps=1)], [copy(fodo) for _ in 1:10]...); periodic=true)
+    dfd = periodic_twiss(oring, beam; detuning=true, method=:fd).detuning
+    dtp = periodic_twiss(oring, beam; detuning=true, method=:tpsa).detuning
+    @test dtp ≈ dfd rtol=1e-3
 end

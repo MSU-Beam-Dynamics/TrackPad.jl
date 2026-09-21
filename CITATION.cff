@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use TrackPad.jl in published work, please cite it as below."
+title: "TrackPad.jl: symplectic particle tracking and linear optics for accelerator lattices"
+type: software
+version: 0.2.0
+date-released: 2026-09-18
+license: MIT
+repository-code: "https://github.com/MSU-Beam-Dynamics/TrackPad.jl"
+url: "https://MSU-Beam-Dynamics.github.io/TrackPad.jl"
+authors:
+  - family-names: Hao
+    given-names: Yue
+    email: haoyue@msu.edu
+    affiliation: "Facility for Rare Isotope Beams, Michigan State University"
+keywords:
+  - accelerator physics
+  - beam dynamics
+  - particle tracking
+  - symplectic integration
+  - truncated power series algebra
+  - automatic differentiation
+  - Julia

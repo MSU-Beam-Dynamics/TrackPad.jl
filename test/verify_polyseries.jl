@@ -1,4 +1,4 @@
-# Tests for TrackPadPolySeriesExt
+# Tests for the PolySeries (CTPS) tracking backend, src/tpsa_polyseries.jl
 # Run with: julia --project=. test/test_polyseries.jl
 
 using Test

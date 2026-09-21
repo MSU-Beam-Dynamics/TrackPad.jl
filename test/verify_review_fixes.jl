@@ -141,9 +141,7 @@ end
     @test tw_t.betax ≈ tw_0.betax
     @test tw_t.betay ≈ tw_0.betay
     @test tw_t.tunex ≈ tw_0.tunex
-    disp_t = periodic_dispersion(ring_t, beam_rf)
-    disp_0 = periodic_dispersion(ring_0, beam_rf)
-    @test disp_t.dx ≈ disp_0.dx
+    @test tw_t.dx ≈ tw_0.dx
     entrance = optics4DUC(tw_0.betax[1], tw_0.alphax[1], tw_0.betay[1], tw_0.alphay[1])
     tr_t = transport_twiss(ring_t, beam_rf, entrance)
     @test tr_t.betax ≈ tw_0.betax
@@ -153,7 +151,7 @@ end
     b = Beam(1.0e9; charge=1, mass=M_PROTON)
     @test b.charge === 1.0
     @test b.mass === M_PROTON
-    @test b.gamma ≈ (1.0e9 + M_PROTON) / M_PROTON
+    @test b.gamma ≈ 1.0e9 / M_PROTON          # positional energy is total
 end
 
 # ── Second review pass: packed-sweep curvature, apertures, turn context,
@@ -221,8 +219,7 @@ end
     cpu_batch_linepass!(coords, ring, beam_rf, nturns)
 
     reference = zeros(1, 6)
-    flags = zeros(Int, 1)
-    ringpass!(reference, ring, beam_rf, flags, nturns)
+    track!(reference, ring, beam_rf; nturns=nturns)
 
     @test coords ≈ reference atol=1e-15
     @test coords[1, 2] ≈ 3 * kick atol=1e-15   # turns 0 + 1 + 2
@@ -253,4 +250,54 @@ end
     ]; periodic=true)
     @test find_closed_orbit_4d(ring, beam_rf) ≈ zeros(4) atol=1e-12
     @test find_closed_orbit_6d(ring, beam_rf) ≈ zeros(6) atol=1e-12
+end
+
+@testset "AT-style dipole edge is symplectic" begin
+    irho, e1, gap, fint = 1 / 8.0, 0.12, 0.05, 0.5
+    r = SVector(1.3e-3, 2.1e-4, -0.9e-3, 1.7e-4, 3.0e-3, 2.0e-2)
+    function edge_jac(m, sympl; entrance=true, h=1.0e-7)
+        f = entrance ? TrackPad.edge_fringe_entrance : TrackPad.edge_fringe_exit
+        M = zeros(6, 6)
+        for j in 1:6
+            e = SVector{6,Float64}(ntuple(k -> k == j ? 1.0 : 0.0, 6))
+            M[:, j] = (f(r + h * e, irho, e1, fint, gap, m, Val(sympl)) -
+                       f(r - h * e, irho, e1, fint, gap, m, Val(sympl))) / (2h)
+        end
+        return M
+    end
+    sv(M) = norm(M' * symplectic_form_rf * M - symplectic_form_rf, Inf)
+
+    # Brown (1) and SOLEIL (2) become exactly symplectic; AT's omission of the
+    # longitudinal term is measurable.
+    for m in (1, 2), entrance in (true, false)
+        @test sv(edge_jac(m, true; entrance=entrance)) < 1.0e-10
+        @test sv(edge_jac(m, false; entrance=entrance)) > 1.0e-8
+    end
+    # THOMX (3) keeps a px dependence, so the correction is a first-order
+    # splitting: much better, not exact.
+    @test sv(edge_jac(3, true)) < sv(edge_jac(3, false)) / 10
+
+    # The correction lives in z (and x for THOMX) and is O(y^2): the transverse
+    # map at fixed momentum is bit-for-bit untouched, so linear optics — tunes,
+    # Twiss, chromaticity, dispersion — cannot move.
+    for m in (1, 2)
+        a = TrackPad.edge_fringe_entrance(r, irho, e1, fint, gap, m, Val(true))
+        b = TrackPad.edge_fringe_entrance(r, irho, e1, fint, gap, m, Val(false))
+        @test a[1] == b[1] && a[2] == b[2] && a[3] == b[3] && a[4] == b[4]
+        @test a[6] == b[6]
+        @test a[5] != b[5]
+    end
+    # Nothing to correct without a fringe integral: the maps are identical.
+    for m in (0, 1)
+        @test TrackPad.edge_fringe_entrance(r, irho, e1, 0.0, gap, m, Val(true)) ==
+              TrackPad.edge_fringe_entrance(r, irho, e1, 0.0, gap, m, Val(false))
+        @test TrackPad.edge_fringe_exit(r, irho, e1, fint, 0.0, m, Val(true)) ==
+              TrackPad.edge_fringe_exit(r, irho, e1, fint, 0.0, m, Val(false))
+    end
+
+    # ... and the assembled element.
+    bend = SBend(1.2, 0.15, 0.075, 0.075;
+                 fint1=0.5, fint2=0.5, gap=0.05, num_int_steps=10)
+    Mb = numerical_map_rf(bend, r; h=1.0e-7)
+    @test sv(Mb) < 1.0e-8
 end

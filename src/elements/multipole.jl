@@ -26,7 +26,7 @@ end
 function Sextupole(L, k2;
                    name::Union{Symbol, String} = :SEXT,
                    polynom_a = nothing, polynom_b = nothing,
-                   max_order::Int = 2, num_int_steps::Int = 10, rad::Int = 0,
+                   max_order::Int = 2, num_int_steps::Int = 2, rad::Int = 0,
                    fringe_entrance::Int = 0, fringe_exit::Int = 0,
                    t1 = nothing, t2 = nothing,
                    r1 = nothing, r2 = nothing,
@@ -81,7 +81,7 @@ end
 function Octupole(L, k3;
                   name::Union{Symbol, String} = :OCT,
                   polynom_a = nothing, polynom_b = nothing,
-                  max_order::Int = 3, num_int_steps::Int = 10, rad::Int = 0,
+                  max_order::Int = 3, num_int_steps::Int = 1, rad::Int = 0,
                   fringe_entrance::Int = 0, fringe_exit::Int = 0,
                   t1 = nothing, t2 = nothing,
                   r1 = nothing, r2 = nothing,

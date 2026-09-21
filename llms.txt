@@ -17,10 +17,11 @@
 
 ## Core contract
 
-- Julia >= 1.10.
+- Julia >= 1.12.
 - Coordinate order: (x, px, y, py, z, delta).
 - Coordinates use metres and normalized momenta.
-- Beam(energy) takes kinetic energy in eV.
+- Beam(energy) takes total energy in eV; Beam(kinetic=K) / Beam(pc=P0c) for the
+  other forms; kinetic_energy(beam), p0c(beam) read them back.
 - Scalar CPU tracking is the behavioral reference.
 - Public APIs use typed Julia values; do not depend on consumer wrappers.
 - Lattice(elements) is open; use periodic=true only for a closed ring.
@@ -29,19 +30,20 @@
 
 ## Task to API
 
-- Single particle line: linepass(lattice, SVector{6}, beam)
-- Single particle ring: ringpass(lattice, SVector{6}, beam, turns)
-- CPU particle matrix: linepass!, ringpass!, cpu_batch_linepass!
-- Packed CPU/GPU matrix: GPULattice, gpu_adapt, batch_linepass!
+- Tracking: track(lat, r_or_coords, beam; nturns=1) and track!(coords, lat, beam; nturns=1, lost=nothing, threaded=false); nturns>1 needs a periodic lattice; lost particles come back as NaN
+- Packed CPU/GPU matrix: GPULattice, gpu_adapt, then track!(coords, gl; nturns)
+- JuTrack-compatible single pass: linepass(lat, SVector{6}, beam), linepass!(coords, lat, beam, lost_flags) (flags, coordinates kept on loss)
 - Parameter sweep: ParamSweepLattice, param_sweep_linepass!
-- Tunes/chromaticity: gettune, getchrom
-- Twiss: transport_twiss for supplied line entrance; periodic_twiss for a ring
+- Tunes/chromaticity: gettune, getchrom (about the off-momentum closed orbit; dQ/d deltaP)
+- Optics: twiss(lat, beam; entrance=nothing) -> TwissResult. Ring (no entrance; periodic_twiss): Twiss, dispersion, alphac, slip, chromaticity; second_order=true, radiation_integrals=true, detuning=true add xi2, I1-I5, dQ/dJ; method=:tpsa (default) uses PolySeries Taylor maps, method=:fd finite differences of tracking
+- Line: twiss(lat, beam; entrance=optics4DUC or TwissResult) / transport_twiss propagates beta, alpha, phase, dispersion; ring-only fields are nothing
+- Sampling inside elements: slices=n, max_step=ds, sample_integrator_steps=true (same keywords on refine_lattice)
 - Maps: transfer_map for either boundary; one_turn_map for a ring
 - Closed orbit: find_closed_orbit_4d, find_closed_orbit_6d
 - PALS subset: read_pals, write_pals
 - MAD-X subset: read_madx
 - Derivatives: batch_jacobian!, batch_hessian_vector_product!, batch_hessian!
-- TPSA: tpsa_map after loading PolySeries
+- TPSA: tpsa_map (PolySeries is a dependency)
 
 ## Constructor signatures
 
@@ -57,7 +59,11 @@
 
 ## Important semantics
 
-- delta is delta_E = (E - E0) / (P0*c), not (P - P0) / P0.
+- The stored delta is delta_E = (E - E0) / (P0*c). The interface speaks
+  delta_P = (P - P0) / P0: dp arguments, getchrom and the dispersion of
+  periodic_twiss are relative momentum (wrt=:deltae opts out); coordinate
+  vectors stay delta_E.
+- getchrom and every momentum derivative of periodic_twiss are about the off-momentum closed orbit; there is no on-axis option.
 - z = s/beta0 - c*t = -c*(t - t0) in metres and is positive for an early
   particle. The longitudinal canonical pair is (z, delta_E).
 - Sextupole k2 and octupole k3 are not pre-divided by factorials.
@@ -65,7 +71,7 @@
 - RF kicks use signed charge*voltage/(P0*c), not voltage/(K0*beta0^2).
 - Direct RFCavity default energy is zero, which disables its kick.
 - `check_lost` also checks transverse coordinate/momentum limits, not only NaN.
-- `twissline` computes an uncoupled periodic solution using finite differences.
+- `twissline` is the historic name of `periodic_twiss` (Taylor maps by default, `method=:fd` for finite differences).
 
 ## Optional backends
 
@@ -73,7 +79,7 @@
 - CUDA: Float32 and Float64.
 - Enzyme: batched Jacobian; second derivatives use finite differences of
   Enzyme Jacobians in the current implementation.
-- PolySeries: optional TPSA extension.
+- PolySeries: hard dependency; TPSA backend of the default optics method.
 
 ## Boundaries
 

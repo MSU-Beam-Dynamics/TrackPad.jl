@@ -9,7 +9,7 @@ Built on KernelAbstractions.jl for backend-agnostic kernels that run on:
   - CPU          (fallback, multi-threaded via Threads.@threads)
 
 Three packed-tracking use cases are supported:
-  1. **Multi-particle tracking**   — `batch_linepass!(coords, gl)`:
+  1. **Multi-particle tracking**   — `track!(coords, gl; nturns)`:
      N particles through the same lattice.  One GPU thread per particle.
 
   2. **Parameter sweep**           — `param_sweep_linepass!(out, r0, ps)`:
@@ -33,7 +33,7 @@ beam = Beam(18e9)
 # -- Use case 1: 1 million particles --
 gl     = gpu_adapt(lat, beam, MetalBackend())   # Float32 on MtlArray
 coords = MtlArray(zeros(Float32, 1_000_000, 6)) # N×6
-batch_linepass!(coords, gl)                     # in-place
+track!(coords, gl)                              # in-place
 
 # -- Use case 3: scan quad strength over 1 000 values --
 N       = 1000
@@ -211,12 +211,13 @@ end
                               L::T, beti::T) where T
     pz2 = one(T) + T(2)*d*beti + d*d - px*px - py*py
     pz2_s = pz2 > zero(T) ? pz2 : zero(T)           # clamp negative
-    NormL = L / (sqrt(pz2_s) + T(1e-30))
+    pz = sqrt(pz2_s) + T(1e-30)
+    NormL = L / pz
     return x + NormL*px,
            px,
            y + NormL*py,
            py,
-           z - (NormL*(beti + d) - L*beti),
+           z - L*((one(T) - beti*beti)*d*(2*beti + d) + beti*beti*(px*px + py*py)) / (pz*((beti + d) + beti*pz)),
            d
 end
 
@@ -246,9 +247,12 @@ end
                                 pb0::T, pb1::T, pb2::T, pb3::T,
                                 L::T, irho::T, beti::T) where T
     RS, IS = _gpu_horner(x, y, pa0, pa1, pa2, pa3, pb0, pb1, pb2, pb3)
-    px_new = px - L*(RS - (d*beti - x*irho)*irho)
+    # Exact δP from the stored δE, as in `bndthinkick`.
+    pnorm = sqrt(one(T) + 2*d*beti + d*d)
+    dp = d*(2*beti + d)/(one(T) + pnorm)
+    px_new = px - L*(RS - (dp - x*irho)*irho)
     py_new = py + L*IS
-    z_new  = z  - L*irho*x*beti
+    z_new  = z  - L*irho*x*(beti + d)/pnorm
     return px_new, py_new, z_new
 end
 
@@ -539,8 +543,7 @@ end
         end
         if energy > zero(T)
             beta  = one(T) / beti
-            invgamma = sqrt(max(zero(T), one(T) - beta*beta))
-            p0c   = energy * (one(T) + invgamma) / beta
+            p0c   = energy * beta                    # P0*c = β0 E0, `energy` is total
             kick  = charge * volt / p0c
             phase = -T(2*pi) * freq * (z + lag) / T(2.99792458e8) - philag
             d     = d - kick * sin(phase)
@@ -957,26 +960,27 @@ _batch_workgroup(backend) =
     backend isa KernelAbstractions.CPU ? 32 : 256
 
 """
-    batch_linepass!(coords::AbstractMatrix, gl::GPULattice,
-                    nturns::Integer = 1) -> coords
+    track!(coords::AbstractMatrix, gl::GPULattice; nturns = 1) -> coords
 
-Track `N` particles through the lattice for `nturns` turns.
+Track `N` particles through a packed [`GPULattice`](@ref) for `nturns` turns.
 
-`coords` is an `N×6` matrix **on the same device** as `gl`.
-It is modified **in-place** and returned.
+`coords` is an `N x 6` matrix **on the same device** as `gl`. It is modified
+**in-place** and returned.
 
 - On Metal: `coords` should be `MtlArray{Float32, 2}`.
 - On CUDA:  `coords` should be `CuArray{Float64, 2}` or `CuArray{Float32, 2}`.
 - On CPU:   `coords` can be any `Matrix{T}`.
 
-Lost particles are written back as `NaN` (all 6 coordinates).
+Lost particles are written back as `NaN` (all 6 coordinates), as they are by
+[`track!`](@ref) on a `Lattice`. More than one turn requires a periodic
+`GPULattice`. `batch_linepass!(coords, gl, nturns)` is the positional
+spelling.
 """
-function batch_linepass!(coords::AbstractMatrix{T},
-                          gl::GPULattice{T},
-                          nturns::Integer = 1) where T
+function track!(coords::AbstractMatrix{T}, gl::GPULattice{T};
+                nturns::Integer=1) where T
     nturns >= 0 || throw(ArgumentError("nturns must be nonnegative"))
     nturns <= 1 || gl.periodic || throw(ArgumentError(
-        "repeated batch tracking requires a periodic GPULattice",
+        "track!: tracking $(nturns) turns requires a periodic GPULattice",
     ))
     n_particles = Int32(size(coords, 1))
     backend = get_backend(coords)
@@ -991,19 +995,12 @@ function batch_linepass!(coords::AbstractMatrix{T},
 end
 
 """
-    batch_ringpass!(coords, gl, nturns) -> coords
+    batch_linepass!(coords, gl::GPULattice, nturns = 1) -> coords
 
-Track a particle batch for `nturns` through a ring encoded as `gl`.
-This is the explicit multi-turn counterpart of [`batch_linepass!`](@ref).
+Positional spelling of [`track!(coords, gl; nturns)`](@ref track!).
 """
-function batch_ringpass!(coords::AbstractMatrix{T},
-                         gl::GPULattice{T},
-                         nturns::Integer) where T
-    gl.periodic || throw(ArgumentError(
-        "batch_ringpass! requires a periodic GPULattice",
-    ))
-    return batch_linepass!(coords, gl, nturns)
-end
+batch_linepass!(coords::AbstractMatrix{T}, gl::GPULattice{T},
+                nturns::Integer = 1) where T = track!(coords, gl; nturns=nturns)
 
 # ============================================================
 # param_sweep_linepass!  (Use case 3)
@@ -1047,60 +1044,88 @@ end
 # ============================================================
 
 """
-    cpu_batch_linepass!(coords::Matrix{T}, lat::Lattice, beam::Beam,
-                        nturns::Integer = 1;
-                        time=0, dt_turn=0, turn=0) -> coords
+    cpu_batch_linepass!(coords, lat, beam = Beam(1e9), nturns = 1;
+                        time = 0, dt_turn = 0, turn = 0) -> coords
 
-CPU multi-threaded version of `batch_linepass!`.  Uses `Threads.@threads`
-to parallelise over particles.  No GPU required.
-
-Lost particles (global coordinate limits or an element aperture) are written
-back as `NaN`. Time-varying elements are resolved once per turn at
-`(time + (n-1)*dt_turn, turn + n - 1)`, matching [`ringpass!`](@ref).
+Positional spelling of [`track!(coords, lat, beam; nturns, threaded=true)`](@ref track!):
+multi-threaded CPU tracking of a particle matrix, no GPU required.
 """
-function cpu_batch_linepass!(coords::Matrix{T}, lat::Lattice,
-                              beam::Beam = Beam(1e9),
-                              nturns::Integer = 1;
-                              time::Real = zero(T), dt_turn::Real = zero(T),
-                              turn::Integer = 0) where T
-    nturns >= 0 || throw(ArgumentError("nturns must be nonnegative"))
-    nturns <= 1 || lat.periodic || throw(ArgumentError(
-        "repeated CPU batch tracking requires a periodic lattice",
-    ))
-    n  = size(coords, 1)
-    β_inv = T(beti(beam))
+cpu_batch_linepass!(coords::Matrix, lat::Lattice, beam::Beam = Beam(1.0e9),
+                    nturns::Integer = 1; time::Real = 0, dt_turn::Real = 0,
+                    turn::Integer = 0) =
+    track!(coords, lat, beam; nturns=nturns, threaded=true,
+           time=time, dt_turn=dt_turn, turn=turn)
+
+# Threaded core of `track!` (src/lattice.jl), next to the chunking helpers it
+# uses. Time-varying elements are resolved once per turn, outside the threaded
+# loop: resolving them per particle both froze turn-dependent parameters and
+# materialized each element once per particle.
+function _threaded_track!(coords::Matrix{T}, lat::Lattice, β_inv::T,
+                          lost::AbstractVector, nturns::Integer,
+                          time::T, dt_turn::T, turn::Int) where T
+    n = size(coords, 1)
     nan6 = SVector{6,T}(T(NaN), T(NaN), T(NaN), T(NaN), T(NaN), T(NaN))
-    t = T(time)
-    dt = T(dt_turn)
-    trn = Int(turn)
+    t = time
+    trn = turn
+    # One chunk of particles per thread, each walking the element list.
+    # `elements` is abstractly typed, so applying an element inside the
+    # particle loop would cost a dynamic dispatch (and a heap-boxed SVector)
+    # for every particle-element pair. Going through `_batch_track_element!`,
+    # which specializes on the concrete element type, amortizes one dispatch
+    # over a whole chunk and keeps the inner loop allocation-free. Chunking
+    # (rather than `@threads for i in 1:n`) also leaves a single thread
+    # barrier per turn.
+    chunks = _particle_chunks(n, Threads.nthreads())
     for _ in 1:nturns
-        # Resolve time/turn-dependent elements once per turn, outside the
-        # threaded loop. Previously every particle rebuilt them at turn 0, which
-        # both froze turn-dependent parameters and materialized each element
-        # once per particle.
         ctx = TimeContext(t; turn=trn)
         elements = _resolved_elements(lat, ctx)
-        Threads.@threads for i in 1:n
-            r = SVector{6, T}(coords[i,1], coords[i,2], coords[i,3],
-                               coords[i,4], coords[i,5], coords[i,6])
+        Threads.@threads for ci in eachindex(chunks)
+            rng = chunks[ci]
             for elem_now in elements
-                r = pass!(elem_now, r, β_inv)
-                if check_lost(r)
-                    r = nan6
-                    break
-                end
                 rap, eap = _elem_apertures(elem_now)
-                if aperture_lost(r, rap, eap)
-                    r = nan6
-                    break
-                end
+                _batch_track_element!(coords, lost, rng, elem_now, β_inv,
+                                      rap, eap, nan6)
             end
-            coords[i,1] = r[1]; coords[i,2] = r[2]
-            coords[i,3] = r[3]; coords[i,4] = r[4]
-            coords[i,5] = r[5]; coords[i,6] = r[6]
         end
-        t += dt
+        t += dt_turn
         trn += 1
     end
-    return coords
+    return nothing
+end
+
+# Split 1:n into at most `k` contiguous ranges of near-equal length.
+function _particle_chunks(n::Int, k::Int)
+    k = max(1, min(k, n))
+    base, rem = divrem(n, k)
+    chunks = Vector{UnitRange{Int}}(undef, k)
+    lo = 1
+    @inbounds for c in 1:k
+        len = base + (c <= rem ? 1 : 0)
+        chunks[c] = lo:(lo + len - 1)
+        lo += len
+    end
+    return chunks
+end
+
+# Specializes on the concrete element type `E`; see the call site above.
+# A lost particle is marked once, stored as NaN, and skipped thereafter, which
+# reproduces the previous "break out of the element loop and write NaN"
+# behaviour without re-testing it at every element.
+function _batch_track_element!(coords::Matrix{T}, lost::AbstractVector,
+                               rng::UnitRange{Int}, elem::E, β_inv::T,
+                               rap, eap, nan6::SVector{6,T}) where {T,E<:AbstractElement}
+    @inbounds for i in rng
+        !iszero(lost[i]) && continue
+        r = SVector{6,T}(coords[i,1], coords[i,2], coords[i,3],
+                         coords[i,4], coords[i,5], coords[i,6])
+        r = pass!(elem, r, β_inv)
+        if check_lost(r) || aperture_lost(r, rap, eap)
+            lost[i] = true
+            r = nan6
+        end
+        coords[i,1] = r[1]; coords[i,2] = r[2]
+        coords[i,3] = r[3]; coords[i,4] = r[4]
+        coords[i,5] = r[5]; coords[i,6] = r[6]
+    end
+    return nothing
 end

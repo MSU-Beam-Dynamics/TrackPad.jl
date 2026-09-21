@@ -19,7 +19,6 @@ using LinearAlgebra
 using StaticArrays
 
 export pass!, linepass!
-export drift6!, strthinkick!
 
 # =============================================================================
 # Physical Constants
@@ -45,6 +44,16 @@ const KICK2 = -1.702414383919314656
 # memory, which forces runtime activity analysis. The linearized drift remains
 # available for cross-code comparison via `drift6(r, L, beti, Val(false))`.
 const USE_EXACT_HAMILTONIAN = true
+
+"""
+    SYMPLECTIC_BEND_EDGE
+
+When `true` (the default) the AT-style dipole edge maps carry the longitudinal
+term their Hamiltonian implies, making them exactly symplectic. `false`
+reproduces AT/JuTrack bit-for-bit, which omits it. See
+`edge_fringe_entrance` for the derivation.
+"""
+const SYMPLECTIC_BEND_EDGE = true
 
 # =============================================================================
 # Helper Functions (allocation-free)
@@ -104,12 +113,11 @@ end
     return (beti + delta_e) / _momentum_norm(delta_e, beti)
 end
 
-"""Return the reference momentum-energy product `P0*c` from kinetic energy."""
-@inline function _reference_p0c(kinetic_energy::T, beti::T) where T
-    beta = inv(beti)
-    invgamma = sqrt(max(zero(T), one(T) - beta * beta))
-    return abs(kinetic_energy) * (one(T) + invgamma) / beta
-end
+"""
+Return the reference momentum-energy product `P0*c = β0 E0` from the total
+energy carried by an RF-type element and the beam's `beti = 1/β0`.
+"""
+@inline _reference_p0c(total_energy::T, beti::T) where T = abs(total_energy) / beti
 
 """
     check_lost(r::AbstractVector) -> Bool
@@ -163,18 +171,33 @@ used for comparisons with codes that approximate the drift.
 @inline drift6(r::SVector{6,S}, L::T, beti::T=one(T)) where {T<:Real,S} =
     drift6(r, L, beti, Val(USE_EXACT_HAMILTONIAN))
 
+"""
+    _drift_dz(L, px, py, δE, beti, pz)
+
+Change of `z = s/β0 − ct` over an exact drift of length `L`,
+`L[(1/β0 + δE)/pz − 1/β0]`, evaluated without subtracting two O(L) numbers:
+the numerator is expanded through its conjugate into
+`(1 − β0⁻²) δE (2/β0 + δE) + β0⁻² (px² + py²)`, all terms of which are already
+small. The direct form loses ~ε·L per drift, which random-walks to 1e-14 over a
+ring and is the floor of finite-difference `M56` (momentum compaction) at the
+1e-6 level.
+"""
+@inline function _drift_dz(L::T, px, py, δE, beti::T, pz) where T
+    num = (one(T) - beti * beti) * δE * (2 * beti + δE) + beti * beti * (px * px + py * py)
+    return L * num / (pz * ((beti + δE) + beti * pz))
+end
+
 @inline function drift6(r::SVector{6,S}, L::T, beti::T, ::Val{true}) where {T<:Real,S}
     # Exact longitudinal momentum for δE = (E-E0)/(P0*c).
     pz2 = one(T) + 2*r[6]*beti + r[6]^2 - r[2]^2 - r[4]^2
     if _check_pz2(pz2)
         return _lost_coords(r, T)
     end
-    NormL = L / sqrt(pz2)
+    pz = sqrt(pz2)
+    NormL = L / pz
     x_new = r[1] + NormL * r[2]
     y_new = r[3] + NormL * r[4]
-    # Match JuTrack's in-place `+=` evaluation order. This avoids changing
-    # finite-difference maps through cancellation at substep boundaries.
-    z_new = r[5] - (NormL * (beti + r[6]) - L * beti)
+    z_new = r[5] - _drift_dz(L, r[2], r[4], r[6], beti, pz)
     return SVector(x_new, r[2], y_new, r[4], z_new, r[6])
 end
 
@@ -216,7 +239,12 @@ end
 
 Track particle through a Marker (no effect).
 """
-function pass!(elem::Marker, r::SVector{6,S}, beti::Real=one(S)) where S
+# `beti` is unused (a Marker is the identity), but the default must not be
+# derived from the coordinate type: `one(S)` needs a type-level `one`, which
+# CTPS cannot provide because a polynomial needs a descriptor that the type
+# does not carry. A plain `Real` default keeps the two-argument form usable
+# for TPSA and AD coordinates alike.
+function pass!(elem::Marker, r::SVector{6,S}, beti::Real=1.0) where S
     return r
 end
 
@@ -224,10 +252,68 @@ end
 # Dipole Edge Focusing (Fringe Fields)
 # =============================================================================
 
+# Edge-focusing strengths and the derivatives the symplectic correction needs.
+# `sgn` is +1 at the entrance and -1 at the exit (the sign of the `px` term in
+# the THOMX model). Returns `(fy, dfy_ddelta, dfy_dpx)`.
+# True when `fy` reduces to the momentum-independent `fx`: the Brown model with
+# no fringe-field integral. The edge is then already symplectic and the
+# correction terms are identically zero, so the whole derivative path (and the
+# `tan` on possibly-TPSA coordinates) is skipped.
+@inline _edge_is_simple(fringecorr, method::Int) =
+    iszero(fringecorr) && method != 2 && method != 3
+
+@inline function _edge_fy(r::SVector{6,S}, inv_rho::T, edge_angle::T,
+                          fringecorr::T, fx::T, method::Int, sgn::T) where {T<:Real,S}
+    d = one(T) + r[6]
+    if method == 2
+        u = edge_angle - fringecorr / d
+        t = tan(u)
+        sec2 = t * t + one(T)
+        fy = inv_rho * t / d
+        return fy, inv_rho * (sec2 * fringecorr / d^3 - t / d^2), zero(T)
+    elseif method == 3
+        u = edge_angle - fringecorr + sgn * r[2] / d
+        t = tan(u)
+        sec2 = t * t + one(T)
+        fy = inv_rho * t
+        return fy, inv_rho * sec2 * (-sgn * r[2] / d^2), inv_rho * sec2 * (sgn / d)
+    else  # method 1 (Brown) and the fallback
+        u = edge_angle - fringecorr / d
+        t = tan(u)
+        sec2 = t * t + one(T)
+        fy = inv_rho * t
+        return fy, inv_rho * sec2 * fringecorr / d^2, zero(T)
+    end
+end
+
+# The edge is the thin-lens flow of H = -fx*x^2/2 + fy(px, delta)*y^2/2, so a
+# delta- or px-dependent `fy` also moves z and x. AT omits both, which is the
+# entire source of its edge non-symplecticity.
+@inline function _edge_apply(r::SVector{6,S}, fx::T, fy, dfy_dd, dfy_dpx,
+                             ::Val{true}) where {T<:Real,S}
+    half_y2 = r[3] * r[3] * T(0.5)
+    return SVector(r[1] + half_y2 * dfy_dpx, r[2] + r[1] * fx, r[3],
+                   r[4] - r[3] * fy, r[5] + half_y2 * dfy_dd, r[6])
+end
+
+@inline function _edge_apply(r::SVector{6,S}, fx::T, fy, _dfy_dd, _dfy_dpx,
+                             ::Val{false}) where {T<:Real,S}
+    return SVector(r[1], r[2] + r[1] * fx, r[3], r[4] - r[3] * fy, r[5], r[6])
+end
+
+@inline function _edge_fringecorr(inv_rho::T, edge_angle::T, fint::T, gap::T,
+                                  method::Int) where T
+    (iszero(fint) || iszero(gap) || method == 0) && return zero(T)
+    sedge = sin(edge_angle)
+    cedge = cos(edge_angle)
+    return inv_rho * gap * fint * (one(T) + sedge^2) / cedge
+end
+
 """
     edge_fringe_entrance(r, inv_rho, edge_angle, fint, gap, method) -> SVector{6,T}
+    edge_fringe_entrance(r, inv_rho, edge_angle, fint, gap, method, Val(symplectic))
 
-Apply dipole edge focusing at entrance.
+Apply dipole edge focusing at the entrance face.
 
 # Arguments
 - `r`: 6D coordinates
@@ -236,78 +322,68 @@ Apply dipole edge focusing at entrance.
 - `fint`: Fringe field integral
 - `gap`: Magnet gap
 - `method`: Fringe calculation method (0=none, 1=Brown, 2=SOLEIL, 3=THOMX)
+
+# Symplecticity
+
+The edge is a thin kick `px += fx*x`, `py -= fy*y`, so it is the flow of
+
+    H = -fx*x^2/2 + fy*y^2/2,
+
+with `dz/ds = ∂H/∂δ` and `dx/ds = ∂H/∂px`. Whenever `fy` depends on the
+momentum — the `1/(1+δ)` of the Brown and SOLEIL models, the `px/(1+δ)` of
+THOMX — the map must therefore also move `z` (and, for THOMX, `x`):
+
+    z += y^2/2 * ∂fy/∂δ,      x += y^2/2 * ∂fy/∂px.
+
+AT and JuTrack omit both terms, which is the sole source of their edge
+non-symplecticity; it vanishes when `fint*gap == 0` under method 1, where `fy`
+reduces to the momentum-independent `fx`. TrackPad includes them by default
+(`SYMPLECTIC_BEND_EDGE`). The correction is `O(y²)`, so it leaves the linear
+optics about `y = 0` — tunes, Twiss, chromaticity, dispersion — bit-for-bit
+unchanged, and only affects off-axis and long-term tracking. Pass
+`Val(false)` as a seventh argument for the AT-compatible map.
 """
 @inline function edge_fringe_entrance(r::SVector{6,S}, inv_rho::T, edge_angle::T,
                                        fint::T, gap::T, method::Int) where {T<:Real,S}
-    if iszero(fint) || iszero(gap) || method == 0
-        fringecorr = zero(T)
-    else
-        sedge = sin(edge_angle)
-        cedge = cos(edge_angle)
-        fringecorr = inv_rho * gap * fint * (one(T) + sedge^2) / cedge
-    end
-    
+    return edge_fringe_entrance(r, inv_rho, edge_angle, fint, gap, method,
+                                Val(SYMPLECTIC_BEND_EDGE))
+end
+
+@inline function edge_fringe_entrance(r::SVector{6,S}, inv_rho::T, edge_angle::T,
+                                       fint::T, gap::T, method::Int,
+                                       sympl::Val) where {T<:Real,S}
+    fringecorr = _edge_fringecorr(inv_rho, edge_angle, fint, gap, method)
     fx = inv_rho * tan(edge_angle)
-    
-    if iszero(fringecorr) && method != 2 && method != 3
-        # Brown model without a fringe-field integral: no momentum dependence,
-        # so skip evaluating tan on the (possibly TPSA) coordinates. Identical
-        # to the general branch for finite coordinates.
-        fy = fx
-    elseif method == 1
-        fy = inv_rho * tan(edge_angle - fringecorr / (one(T) + r[6]))
-    elseif method == 2
-        fy = inv_rho * tan(edge_angle - fringecorr / (one(T) + r[6])) / (one(T) + r[6])
-    elseif method == 3
-        fy = inv_rho * tan(edge_angle - fringecorr + r[2] / (one(T) + r[6]))
-    else  # Fallback to Brown (method 1)
-        fy = inv_rho * tan(edge_angle - fringecorr / (one(T) + r[6]))
+    if _edge_is_simple(fringecorr, method)
+        return SVector(r[1], r[2] + r[1] * fx, r[3], r[4] - r[3] * fx, r[5], r[6])
     end
-    
-    px_new = r[2] + r[1] * fx
-    py_new = r[4] - r[3] * fy
-    
-    return SVector(r[1], px_new, r[3], py_new, r[5], r[6])
+    fy, dfy_dd, dfy_dpx = _edge_fy(r, inv_rho, edge_angle, fringecorr, fx, method, one(T))
+    return _edge_apply(r, fx, fy, dfy_dd, dfy_dpx, sympl)
 end
 
 """
     edge_fringe_exit(r, inv_rho, edge_angle, fint, gap, method) -> SVector{6,T}
+    edge_fringe_exit(r, inv_rho, edge_angle, fint, gap, method, Val(symplectic))
 
-Apply dipole edge focusing at exit.
-Same as entrance but with opposite sign for THOMX method px term.
+Apply dipole edge focusing at the exit face. Identical to
+[`edge_fringe_entrance`](@ref) except for the sign of the THOMX `px` term.
 """
 @inline function edge_fringe_exit(r::SVector{6,S}, inv_rho::T, edge_angle::T,
                                    fint::T, gap::T, method::Int) where {T<:Real,S}
-    if iszero(fint) || iszero(gap) || method == 0
-        fringecorr = zero(T)
-    else
-        sedge = sin(edge_angle)
-        cedge = cos(edge_angle)
-        fringecorr = inv_rho * gap * fint * (one(T) + sedge^2) / cedge
-    end
-    
+    return edge_fringe_exit(r, inv_rho, edge_angle, fint, gap, method,
+                            Val(SYMPLECTIC_BEND_EDGE))
+end
+
+@inline function edge_fringe_exit(r::SVector{6,S}, inv_rho::T, edge_angle::T,
+                                   fint::T, gap::T, method::Int,
+                                   sympl::Val) where {T<:Real,S}
+    fringecorr = _edge_fringecorr(inv_rho, edge_angle, fint, gap, method)
     fx = inv_rho * tan(edge_angle)
-    
-    if iszero(fringecorr) && method != 2 && method != 3
-        # Brown model without a fringe-field integral: no momentum dependence,
-        # so skip evaluating tan on the (possibly TPSA) coordinates. Identical
-        # to the general branch for finite coordinates.
-        fy = fx
-    elseif method == 1
-        fy = inv_rho * tan(edge_angle - fringecorr / (one(T) + r[6]))
-    elseif method == 2
-        fy = inv_rho * tan(edge_angle - fringecorr / (one(T) + r[6])) / (one(T) + r[6])
-    elseif method == 3
-        # Note: exit uses -r[2] instead of +r[2]
-        fy = inv_rho * tan(edge_angle - fringecorr - r[2] / (one(T) + r[6]))
-    else  # Fallback to Brown (method 1)
-        fy = inv_rho * tan(edge_angle - fringecorr / (one(T) + r[6]))
+    if _edge_is_simple(fringecorr, method)
+        return SVector(r[1], r[2] + r[1] * fx, r[3], r[4] - r[3] * fx, r[5], r[6])
     end
-    
-    px_new = r[2] + r[1] * fx
-    py_new = r[4] - r[3] * fy
-    
-    return SVector(r[1], px_new, r[3], py_new, r[5], r[6])
+    fy, dfy_dd, dfy_dpx = _edge_fy(r, inv_rho, edge_angle, fringecorr, fx, method, -one(T))
+    return _edge_apply(r, fx, fy, dfy_dd, dfy_dpx, sympl)
 end
 
 # =============================================================================
@@ -349,12 +425,19 @@ focusing effect from the curved trajectory.
     end
     
     # Apply kicks to momenta - note the irho term for the bend
-    # px -= L * (ReSum - (δ/β0 - x*irho) * irho)
-    # py += L * ImSum
-    # z -= L * irho * x * beti for z = s/β0-c*t.
-    px_new = r[2] - L * (ReSum - (r[6] * beti - r[1] * irho) * irho)
+    #   px -= L * (ReSum - (δP - x*irho) * irho)
+    #   py += L * ImSum
+    #   z  -= L * irho * x * dδP/dδE        for z = s/β0 - c*t.
+    # δP = (P-P0)/P0 is taken from the stored δE through the exact relation
+    # (1+δP)² = 1 + 2δE/β0 + δE², in the cancellation-free form
+    # δP = δE(2/β0 + δE)/(2+δP); the linearised δE/β0 that AT and JuTrack use
+    # is exact only for β0 = 1 and made the off-momentum optics of a finite-β0
+    # ring depend on the species at O(δ²).
+    pnorm = _momentum_norm(r[6], beti)
+    dp = r[6] * (2 * beti + r[6]) / (one(T) + pnorm)
+    px_new = r[2] - L * (ReSum - (dp - r[1] * irho) * irho)
     py_new = r[4] + L * ImSum
-    z_new = r[5] - L * irho * r[1] * beti
+    z_new = r[5] - L * irho * r[1] * (beti + r[6]) / pnorm
     
     return SVector(r[1], px_new, r[3], py_new, z_new, r[6])
 end
@@ -715,7 +798,7 @@ end
 
 Track particle through an RF Cavity using drift-kick-drift.
 The energy kick is normalized by the reference `P0*c` reconstructed from
-`elem.energy` (kinetic energy) and `beti`.
+`elem.energy` (total energy) and `beti`.
 """
 function pass!(elem::RFCavity{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     if elem.L > zero(T)
@@ -1111,11 +1194,15 @@ Exact bend body map (Forest 12.18).
             r[2],
             r[3] + r[4] * NormL,
             r[4],
-            r[5] - (NormL * energy_factor - L * beti),
+            r[5] - _drift_dz(L, r[2], r[4], r[6], beti, pz),
             r[6]
         )
     else
-        pzmx = pz - (1 + r[1] * irho)
+        # pz − 1 without cancellation: (p² − 1 − px² − py²)/(pz + 1) with
+        # p² − 1 = δE(2/β0 + δE) exactly.
+        p2m1 = r[6] * (2 * beti + r[6])
+        pzm1 = (p2m1 - r[2] * r[2] - r[4] * r[4]) / (pz + one(T))
+        pzmx = pzm1 - r[1] * irho
         cs = cos(irho * L)
         sn = sin(irho * L)
         
@@ -1127,15 +1214,32 @@ Exact bend body map (Forest 12.18).
         val1 = _safe_clamp(val1, -one(T), one(T))
         val2 = _safe_clamp(val2, -one(T), one(T))
         
-        dasin = L + (asin(val1) - asin(val2)) / irho
+        dasin_rel = (asin(val1) - asin(val2)) / irho   # dasin − L
+        dasin = L + dasin_rel
         
-        x_new = (pxyz(momentum, px_new, r[4]) - pzmx * cs + r[2] * sn - 1) / irho
+        # x_new = [(pz_new − 1) − pzmx cos + px sin]/h with both pz − 1 terms in
+        # the cancellation-free form above. The direct Forest expression
+        # (pz_new − pzmx cos + px sin − 1)/h subtracts O(1) quantities and
+        # loses ~ε/h ≈ 1e-14 m per step, which random-walks to 1e-12 m over a
+        # ring and corrupts finite-difference Jacobians (step 1e-8) at 1e-4.
+        pz_new = pxyz(momentum, px_new, r[4])
+        pzm1_new = (p2m1 - px_new * px_new - r[4] * r[4]) / (pz_new + one(T))
+        x_new = (pzm1_new - pzmx * cs + r[2] * sn) / irho
         y_new = r[3] + r[4] * dasin
-        z_new = r[5] - (energy_factor * dasin - L * beti)
+        # energy_factor·dasin − L/β0 = L δE + energy_factor·(dasin − L): no O(L) cancellation.
+        z_new = r[5] - (L * r[6] + energy_factor * dasin_rel)
         
         return SVector(x_new, px_new, y_new, r[4], z_new, r[6])
     end
 end
+
+# The exact-bend kernels are `@inline` for `Real` coordinates, where that is
+# free. For series or dual coordinates every arithmetic operation is itself a
+# sizeable function, and inlining four bodies, two fringes and two wedges per
+# `pass!` produced a single function LLVM took 30 s to compile; through this
+# barrier the kernels compile once each (~2 s in total) and are called.
+@inline _exact_kernel(f::F, r::SVector{6,<:Real}, args...) where F = f(r, args...)
+@noinline _exact_kernel(f::F, r::SVector{6}, args...) where F = f(r, args...)
 
 """
     pass!(elem::ExactSBend, r, beti)
@@ -1164,18 +1268,18 @@ function pass!(elem::ExactSBend{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,
     end
 
     # JuTrack/Forest ordering: rotation, bend fringe, multipole fringe, edge.
-    r = yrot(r, elem.e1, beti)
+    r = _exact_kernel(yrot, r, elem.e1, beti)
     if elem.fringe_bend_entrance != 0
-        r = bend_fringe(r, irho, elem.gk, beti)
+        r = _exact_kernel(bend_fringe, r, irho, elem.gk, beti)
     end
     if !iszero(elem.fringe_quad_entrance)
-        r = multipole_fringe(r, polynom_a, polynom_b, elem.max_order, one(T), 1, beti)
+        r = _exact_kernel(multipole_fringe, r, polynom_a, polynom_b, elem.max_order, one(T), 1, beti)
     end
-    r = bend_edge(r, irho, -elem.e1, beti)
+    r = _exact_kernel(bend_edge, r, irho, -elem.e1, beti)
 
     # Integrator (Body): drift-kick-drift using exact_bend_body.
     if elem.num_int_steps == 0
-        r = exact_bend_body(r, irho, elem.L, beti)
+        r = _exact_kernel(exact_bend_body, r, irho, elem.L, beti)
     else
         SL = elem.L / elem.num_int_steps
         L1 = SL * T(DRIFT1)
@@ -1184,27 +1288,27 @@ function pass!(elem::ExactSBend{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,
         K2 = SL * T(KICK2)
 
         for _ in 1:elem.num_int_steps
-            r = exact_bend_body(r, irho, L1, beti)
-            r = strthinkick(r, polynom_a, polynom_b, K1, elem.max_order)
-            r = exact_bend_body(r, irho, L2, beti)
-            r = strthinkick(r, polynom_a, polynom_b, K2, elem.max_order)
-            r = exact_bend_body(r, irho, L2, beti)
-            r = strthinkick(r, polynom_a, polynom_b, K1, elem.max_order)
-            r = exact_bend_body(r, irho, L1, beti)
+            r = _exact_kernel(exact_bend_body, r, irho, L1, beti)
+            r = _exact_kernel(strthinkick, r, polynom_a, polynom_b, K1, elem.max_order)
+            r = _exact_kernel(exact_bend_body, r, irho, L2, beti)
+            r = _exact_kernel(strthinkick, r, polynom_a, polynom_b, K2, elem.max_order)
+            r = _exact_kernel(exact_bend_body, r, irho, L2, beti)
+            r = _exact_kernel(strthinkick, r, polynom_a, polynom_b, K1, elem.max_order)
+            r = _exact_kernel(exact_bend_body, r, irho, L1, beti)
         end
     end
 
     # JuTrack/Forest exit ordering reverses the entrance composition.
-    r = bend_edge(r, irho, -elem.e2, beti)
+    r = _exact_kernel(bend_edge, r, irho, -elem.e2, beti)
     if !iszero(elem.fringe_quad_exit)
-        r = multipole_fringe(r, polynom_a, polynom_b, elem.max_order, -one(T), 1, beti)
+        r = _exact_kernel(multipole_fringe, r, polynom_a, polynom_b, elem.max_order, -one(T), 1, beti)
     end
     if elem.fringe_bend_exit != 0
-        r = bend_fringe(r, -irho, elem.gk, beti)
+        r = _exact_kernel(bend_fringe, r, -irho, elem.gk, beti)
     end
     
     # Coordinate Rotation (Exit)
-    r = yrot(r, elem.e2, beti)
+    r = _exact_kernel(yrot, r, elem.e2, beti)
     
     # Exit Misalignment
     if !iszero(elem.r2)
@@ -1728,8 +1832,8 @@ end
     dl1 = dl * T(1.3512071919596573)
     dl0 = dl * T(-1.7024143839193146)
 
-    Po = sqrt((elem.energy / T(M_ELECTRON))^2 - one(T))
-    Aw = T(1e-9) * T(C_LIGHT) / (T(M_ELECTRON) * T(1e-9)) / T(2pi) * elem.lw * elem.Bmax
+    Po = sqrt((elem.energy / elem.mass)^2 - one(T))
+    Aw = T(1e-9) * T(C_LIGHT) / (elem.mass * T(1e-9)) / T(2pi) * elem.lw * elem.Bmax * abs(elem.charge)
     Zw = zero(T)
 
     @inbounds for _ in 1:Nstep
@@ -1798,12 +1902,13 @@ end
     return Bxv, Byv, Bzv
 end
 
-@inline function _wig_radiation_kicks(r::SVector{6,S}, Bxv, Byv, Po::T, srCoef::T, dl::T) where {T,S}
+@inline function _wig_radiation_kicks(r::SVector{6,S}, Bxv, Byv, Po::T, srCoef::T, dl::T,
+                                      mass::T) where {T,S}
     B2 = Bxv^2 + Byv^2
     if iszero(B2)
         return r
     end
-    H = Po * T(M_ELECTRON) / T(C_LIGHT)
+    H = Po * mass / T(C_LIGHT)
     irho2 = B2 / (H * H)
     dFactor = (one(T) + r[6])^2
     dDelta = -srCoef * dFactor * irho2 * dl
@@ -1819,17 +1924,17 @@ end
     dl1 = SL * T(1.3512071919596573)
     dl0 = SL * T(-1.7024143839193146)
 
-    gamma = elem.energy / T(M_ELECTRON)
+    gamma = elem.energy / elem.mass
     Po = sqrt(gamma^2 - one(T))
-    Aw = T(1e-9) * T(C_LIGHT) / (T(M_ELECTRON) * T(1e-9)) / T(2pi) * elem.lw * elem.Bmax
-    srCoef = T(2.0 / 3.0) * T(2.8179403205e-15) * gamma^3
+    Aw = T(1e-9) * T(C_LIGHT) / (elem.mass * T(1e-9)) / T(2pi) * elem.lw * elem.Bmax * abs(elem.charge)
+    srCoef = T(2.0 / 3.0) * T(classical_radius(elem.mass, elem.charge)) * gamma^3
     Zw = zero(T)
 
     ax, _ = _wig_ax_axpy(elem, r, Zw, Aw, Po)
     ay, _ = _wig_ay_aypx(elem, r, Zw, Aw, Po)
     r = SVector(r[1], r[2] - ax, r[3], r[4] - ay, r[5], r[6])
     Bxv, Byv, _ = _wig_B(elem, r, Zw)
-    r = _wig_radiation_kicks(r, Bxv, Byv, Po, srCoef, SL)
+    r = _wig_radiation_kicks(r, Bxv, Byv, Po, srCoef, SL, elem.mass)
     r = SVector(r[1], r[2] + ax, r[3], r[4] + ay, r[5], r[6])
 
     @inbounds for _ in 1:Nstep
@@ -1841,7 +1946,7 @@ end
         ay, _ = _wig_ay_aypx(elem, r, Zw, Aw, Po)
         r = SVector(r[1], r[2] - ax, r[3], r[4] - ay, r[5], r[6])
         Bxv, Byv, _ = _wig_B(elem, r, Zw)
-        r = _wig_radiation_kicks(r, Bxv, Byv, Po, srCoef, SL)
+        r = _wig_radiation_kicks(r, Bxv, Byv, Po, srCoef, SL, elem.mass)
         r = SVector(r[1], r[2] + ax, r[3], r[4] + ay, r[5], r[6])
     end
 
@@ -1917,8 +2022,13 @@ function pass!(elem::LongitudinalRFMap{T,E}, r::SVector{6,S}, beti::T=one(T)) wh
     end
     h = T(_rf_h(elem.rf))
     beta = inv(beti)
-    eta = elem.alphac - (one(T) - beta * beta)
-    z_new = r[5] - (T(2pi) * h * eta * beti / k) * r[6]
+    eta = elem.alphac - (one(T) - beta * beta)          # slip factor η = αc − 1/γ0²
+    # One-turn slip in the stored coordinates. With z = s/β0 − ct the closed
+    # orbit at relative momentum δP arrives with Δz = −(C/β0) η δP per turn
+    # (C = hλ_rf = 2πh/k), and δP = δE/β0 to first order, hence the β0⁻²:
+    # Δz = −C η δE / β0². Verified against the path length of the off-momentum
+    # closed orbit and against ∮D/ρ ds on a β0 = 0.875 proton ring.
+    z_new = r[5] - (T(2pi) * h * eta * beti * beti / k) * r[6]
     return SVector(r[1], r[2], r[3], r[4], z_new, r[6])
 end
 
@@ -2181,7 +2291,7 @@ function pass!(::Union{LongitudinalRLCWake, LongitudinalWake}, ::SVector{6},
     throw(ArgumentError(
         "longitudinal wake elements are collective: the kick requires the " *
         "convolution of the wake Green function with the histogram of r[5] " *
-        "over all macroparticles. Use linepass!/ringpass! with an N x 6 " *
+        "over all macroparticles. Use `track!`/`linepass!` with an N x 6 " *
         "particle matrix instead of single-particle tracking."))
 end
 

@@ -1,7 +1,7 @@
 """
     RFCavity{T, N}
 
-An RF cavity. `energy` is reference kinetic energy in eV and `charge` is the
+An RF cavity. `energy` is the reference total energy in eV (pass `beam.energy`) and `charge` is the
 reference-particle charge in units of the elementary charge. Direct
 construction defaults to `+1` for backward constructor compatibility; PALS
 and MAD-X readers set it from the reference beam.
@@ -41,7 +41,7 @@ const C_LIGHT = 2.99792458e8
 """
     CrabCavity{T, N}
 
-Canonical crab cavity element. `energy` is reference kinetic energy in eV and
+Canonical crab cavity element. `energy` is the reference total energy in eV (pass `beam.energy`) and
 `charge` is the signed reference charge in elementary-charge units.
 """
 struct CrabCavity{T, N} <: AbstractCavity
@@ -79,7 +79,7 @@ end
 """
     AccelCavity{T, N}
 
-Longitudinal accelerating cavity. `energy` is reference kinetic energy in eV
+Longitudinal accelerating cavity. `energy` is the reference total energy in eV (pass `beam.energy`)
 and `charge` is the signed reference charge in elementary-charge units.
 """
 struct AccelCavity{T, N} <: AbstractCavity
@@ -115,9 +115,21 @@ function Adapt.adapt_structure(to, x::AccelCavity)
 end
 
 """
-    LongitudinalRFMap{T, E}
+    LongitudinalRFMap(alphac, rf)
 
-Simple longitudinal map linked to an RF element.
+Thin longitudinal drift that applies one turn of phase slip for a ring whose
+transverse lattice is not tracked. `alphac` is the momentum compaction
+`(1/C) dC/dδP` and `rf` the RF element (`RFCavity`, `AccelCavity`, `CrabCavity`)
+whose frequency `f` and harmonic number `h` fix the circumference
+`C = h c/f`. The map leaves the transverse coordinates and `δE` unchanged and
+shifts `z` by
+
+    Δz = −C η δE / β0²,   η = alphac − 1/γ0²,
+
+which is the path-length change of the off-momentum closed orbit expressed in
+the stored coordinates `z = s/β0 − ct`, `δE = (E − E0)/(P0 c)` (the second
+`β0` converts `δE` to `δP`). `alphac` is exactly the `alphac` field of
+[`periodic_twiss`](@ref) with its default `wrt=:deltap`.
 """
 struct LongitudinalRFMap{T, E<:AbstractElement} <: AbstractLongitudinalRFMap
     alphac::T

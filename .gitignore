@@ -33,3 +33,6 @@ scripts/
 
 # Local Linux Julia toolchain for sandboxed test runs (see .toolchain/README.md)
 .toolchain/
+
+# Local docs build helper (sandbox)
+docs/make_local.jl

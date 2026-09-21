@@ -1,4 +1,5 @@
 [deps]
+PolySeries = "6f3fcde8-8165-4326-91a7-f7698485e8a3"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
@@ -6,10 +7,12 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 TrackPad = "e7bec244-bd43-46ed-8fec-7dc091d24617"
 
 [sources]
+PolySeries = {url = "https://github.com/MSU-Beam-Dynamics/PolySeries.jl"}
 TrackPad = {path = "../.."}
 
 [compat]
+PolySeries = "0.1"
 CUDA = "5"
 Enzyme = "0.13"
 StaticArrays = "1.9"
-julia = "1.10"
+julia = "1.12"
