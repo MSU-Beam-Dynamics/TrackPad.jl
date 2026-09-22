@@ -114,9 +114,8 @@ julia --project=docs docs/make.jl                    # build the manual
 ```
 
 Run tests through `Pkg.test()` rather than `include("test/runtests.jl")`: the
-test target activates the JuTrack and Enzyme test dependencies, which
-`[sources]` resolves from GitHub together with PolySeries. CUDA hardware tests live in the
-separate `test/cuda` environment. See [CONTRIBUTING.md](CONTRIBUTING.md).
+test target activates the Enzyme test dependency. CUDA hardware tests live in
+the separate `test/cuda` environment. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Citing
 

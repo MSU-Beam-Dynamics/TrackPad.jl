@@ -120,6 +120,11 @@ infer an unusable concrete vector element type.
 ## Compatibility Rules
 
 - Preserve canonical JuTrack numerical behavior where parity is already tested.
+- JuTrack is **not** a dependency of the package or of its tests. The parity
+  tests read frozen JuTrack output from `test/jutrack_reference.jl` via
+  `jutrack_reference(key)`. Never add `import JuTrack` to a test file; add the
+  case to `test/jutrack_reference/generate.jl` instead, regenerate, and read the
+  diff (`test/jutrack_reference/README.md`).
 - Element parity tests generally use an absolute tolerance of `1e-15`.
 - Keep finite-difference step defaults stable unless a targeted analysis and
   cross-code fixture justify a change. The `getchrom` defaults sit at their

@@ -4,26 +4,12 @@ Base.include(@__MODULE__, joinpath(@__DIR__, "convention_helpers.jl"))
 using PolySeries
 using StaticArrays
 using LinearAlgebra
-import JuTrack
 
-# Keep JuTrack TPSA comparisons on the same Hamiltonian convention as TrackPad.
-# TrackPad default is exact Hamiltonian + exact beti (deltaE/p0 style sixth coord).
-function with_matched_jutrack_hamiltonian(f::Function)
-    old_h = JuTrack.use_exact_Hamiltonian
-    old_b = JuTrack.use_exact_beti
-    try
-        if TrackPad.USE_EXACT_HAMILTONIAN
-            JuTrack.use_exact_Hamiltonian = 1
-            JuTrack.use_exact_beti = 1
-        else
-            JuTrack.use_exact_Hamiltonian = 0
-            JuTrack.use_exact_beti = 0
-        end
-        return f()
-    finally
-        JuTrack.use_exact_Hamiltonian = old_h
-        JuTrack.use_exact_beti = old_b
-    end
+# The frozen JuTrack TPSA maps were taken on the same Hamiltonian convention as
+# TrackPad's default: exact Hamiltonian and exact beti (the deltaE/p0 sixth
+# coordinate). They only apply while that compile-time constant is true.
+@testset "JuTrack TPSA references assume the exact Hamiltonian" begin
+    @test TrackPad.USE_EXACT_HAMILTONIAN
 end
 
 # ── Common lattice (same parameters used in both TrackPad and JuTrack) ──────
@@ -38,13 +24,8 @@ D  = Drift(L_d)
 ring = Lattice([QF, D, QD, D]; periodic=true)
 beam = jutrack_beam(3.0e9)   # JuTrack TPSA calls use E0=3.0e9 (kinetic)
 
-# JuTrack lattice (KQUAD matches TrackPad Quadrupole; same NumIntSteps)
-const line_jt = [
-    JuTrack.KQUAD(len=L_q, k1= k1, NumIntSteps=10),
-    JuTrack.DRIFT(len=L_d),
-    JuTrack.KQUAD(len=L_q, k1=-k1, NumIntSteps=10),
-    JuTrack.DRIFT(len=L_d),
-]
+# The frozen JuTrack reference is the same cell built from KQUAD/DRIFT with the
+# same NumIntSteps, tracked with linepass_TPSA! at E0 = 3.0e9.
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -65,22 +46,14 @@ function tp_to_matrix(r_tpsa::SVector{6})
     return M
 end
 
-# Extract 6×6 linear map from JuTrack CTPS vector
-function jt_to_matrix(rin)
-    M = zeros(Float64, 6, 6)
-    for i in 1:6, j in 1:6
-        M[i, j] = rin[i].map[j+1]    # map[1]=const, map[j+1]=coeff of var j
-    end
-    return M
-end
+# The frozen JuTrack maps, canonicalised to TrackPad's sign of z when they were
+# recorded. Row i is the Taylor map of coordinate i: column 1 is the constant
+# term, columns 2..7 the linear ones, and (at order 2) columns 8..28 the
+# quadratic ones -- the same PolyMap index ordering PolySeries uses.
+const JT_TPSA = Dict(order => jutrack_reference("tpsa/order$order") for order in (1, 2))
 
-function canonical_jutrack_tpsa(order::Int)
-    rin = [JuTrack.CTPS(0.0, i, 6, order) for i in 1:6]
-    rin[5] = -rin[5]
-    JuTrack.linepass_TPSA!(line_jt, rin; E0=3.0e9, m0=JuTrack.m_e)
-    rin[5] = -rin[5]
-    return rin
-end
+# Extract the 6×6 linear map from a frozen JuTrack CTPS map.
+jt_to_matrix(m::AbstractMatrix) = Float64[m[i, j + 1] for i in 1:6, j in 1:6]
 
 @testset "TPSA linear map matches finite-difference one_turn_map" begin
     # First-order TPSA map about closed orbit (zero for this cell)
@@ -145,46 +118,30 @@ end
 # Both packages were built from the same original C++ code base.
 
 @testset "JuTrack CTPS: first-order map matches TrackPad PolySeries" begin
-    with_matched_jutrack_hamiltonian() do
-        # JuTrack setup: 6 identity CTPS variables, order 1
-        rin_jt = canonical_jutrack_tpsa(1)
+    M_jt = jt_to_matrix(JT_TPSA[1])
+    M_tp = tp_to_matrix(tpsa_map(ring, beam; order=1))
 
-        r_tp = tpsa_map(ring, beam; order=1)
-
-        M_jt = jt_to_matrix(rin_jt)
-        M_tp = tp_to_matrix(r_tp)
-
-        # With matched Hamiltonian settings, maps agree to floating-noise level.
-        for i in 1:6, j in 1:6
-            @test isapprox(M_tp[i,j], M_jt[i,j]; atol=1e-12)
-        end
+    # With matched Hamiltonian settings, maps agree to floating-noise level.
+    for i in 1:6, j in 1:6
+        @test isapprox(M_tp[i,j], M_jt[i,j]; atol=1e-12)
     end
 end
 
 @testset "JuTrack CTPS: constant term (closed-orbit value) matches" begin
-    with_matched_jutrack_hamiltonian() do
-        rin_jt = canonical_jutrack_tpsa(1)
-
-        r_tp = tpsa_map(ring, beam; order=1)
-
-        for i in 1:6
-            @test isapprox(tp_coefficient(r_tp[i], 1), rin_jt[i].map[1]; atol=1e-14)
-        end
+    r_tp = tpsa_map(ring, beam; order=1)
+    for i in 1:6
+        @test isapprox(tp_coefficient(r_tp[i], 1), JT_TPSA[1][i, 1]; atol=1e-14)
     end
 end
 
 @testset "JuTrack CTPS: second-order coefficients match TrackPad PolySeries" begin
-    with_matched_jutrack_hamiltonian() do
-        # order-2: 28 terms for 6 variables  (1 + 6 + 21)
-        rin_jt2 = canonical_jutrack_tpsa(2)
+    # order-2: 28 terms for 6 variables  (1 + 6 + 21)
+    r2_tp = tpsa_map(ring, beam; order=2)
 
-        r2_tp = tpsa_map(ring, beam; order=2)
-
-        nterms = length(rin_jt2[1].map)   # = 28
-        @test nterms == length(r2_tp[1].c)
-        for i in 1:6, k in 1:nterms
-            @test isapprox(tp_coefficient(r2_tp[i], k), rin_jt2[i].map[k]; atol=1e-12)
-        end
+    nterms = size(JT_TPSA[2], 2)   # = 28
+    @test nterms == length(r2_tp[1].c)
+    for i in 1:6, k in 1:nterms
+        @test isapprox(tp_coefficient(r2_tp[i], k), JT_TPSA[2][i, k]; atol=1e-12)
     end
 end
 

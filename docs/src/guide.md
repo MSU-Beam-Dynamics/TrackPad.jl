@@ -588,7 +588,7 @@ still be seen.
 | `MethodError` constructing a multipole | Strength supplied as a keyword | Use `Quadrupole(L, k1)`, `Sextupole(L, k2)`, or `Octupole(L, k3)` |
 | RF cavity produces no kick | Direct cavity has `energy=0` | Set `energy=beam.energy` and `charge=beam.charge` |
 | GPU packing throws `ArgumentError` | Element or setting is unsupported | Keep that model on CPU or implement/test exact GPU support; do not remove physics silently |
-| `JuTrack`/`PolySeries` missing in tests | `test/runtests.jl` was run directly | Use `julia --project=. -e 'using Pkg; Pkg.test()'` |
+| `Enzyme` missing in tests | `test/runtests.jl` was run directly | Use `julia --project=. -e 'using Pkg; Pkg.test()'` |
 | Cross-code chromaticity differs | Convention or bend-model mismatch | Record `wrt`, `method` (and `dpp` for `:fd`), the RF state, and the bend model — see [Bend models](@ref bend_models) |
 | Metal type error | Metal does not support `Float64` kernels | Use `Float32` on Metal or `Float64` CPU/CUDA |
 

@@ -1,21 +1,8 @@
 using Test
 using TrackPad
-import JuTrack
 using LinearAlgebra
 using StaticArrays
 Base.include(@__MODULE__, joinpath(@__DIR__, "convention_helpers.jl"))
-
-function with_jutrack_exact_beti(f::Function)
-    old_exact_beti = JuTrack.use_exact_beti
-    JuTrack.use_exact_beti = 1
-    try
-        return f()
-    finally
-        JuTrack.use_exact_beti = old_exact_beti
-    end
-end
-
-with_jutrack_exact_beti() do
 
 # Simple periodic cell to validate optics APIs
 D = Drift(1.0; name="D")
@@ -189,14 +176,11 @@ end
     @test norm(map6' * symplectic_form * map6 - symplectic_form, Inf) < 1.0e-8
 end
 
-ring_jt = [
-    JuTrack.DRIFT(len=1.0),
-    JuTrack.KQUAD(len=0.5, k1=0.6, NumIntSteps=8),
-    JuTrack.DRIFT(len=1.0),
-    JuTrack.KQUAD(len=0.5, k1=-0.6, NumIntSteps=8),
-]
-tune_jt = JuTrack.gettune(ring_jt; energy=3.0e9, mass=JuTrack.m_e)
-chrom_jt = JuTrack.getchrom(ring_jt; energy=3.0e9, mass=JuTrack.m_e)
+# Frozen JuTrack references for the same ring, built as
+# DRIFT(1.0), KQUAD(len=0.5, k1=0.6, NumIntSteps=8), DRIFT(1.0),
+# KQUAD(len=0.5, k1=-0.6, NumIntSteps=8) at energy=3.0e9 (kinetic).
+tune_jt = jutrack_reference("optics/tune")
+chrom_jt = jutrack_reference("optics/chrom")
 
 @testset "TrackPad Optics API" begin
     qx, qy = gettune(ring, beam)
@@ -251,9 +235,7 @@ end
     m66_ord0 = findm66(ring, 0.0, 0; E0=beam.energy, m0=M_ELECTRON)
     @test m66_ord0 == m66
 
-    m66_jt = canonicalize_jutrack_map(
-        JuTrack.fastfindm66(ring_jt, 0.0; E0=3.0e9, m0=JuTrack.m_e),
-    )
+    m66_jt = jutrack_reference("optics/m66")
     # The transverse block agrees to the bit. M56 of this bend-free ring is the
     # kinematic L/γ² ≈ 9e-8, which JuTrack's drift computes as the difference of
     # two O(L) numbers; its finite-difference value carries ~5e-9 of roundoff
@@ -272,11 +254,12 @@ end
     @test op.optics_x.beta > 0
     @test op.optics_y.beta > 0
 
-    op_jt = JuTrack.periodicEdwardsTengTwiss(ring_jt, 0.0, 0; E0=3.0e9, m0=JuTrack.m_e)
-    @test isapprox(op.optics_x.beta, op_jt.betax; atol=1e-13)
-    @test isapprox(op.optics_x.alpha, op_jt.alphax; atol=1e-13)
-    @test isapprox(op.optics_y.beta, op_jt.betay; atol=1e-13)
-    @test isapprox(op.optics_y.alpha, op_jt.alphay; atol=1e-13)
+    # [betax, alphax, betay, alphay] from JuTrack.periodicEdwardsTengTwiss
+    op_jt = jutrack_reference("optics/edwards_teng")
+    @test isapprox(op.optics_x.beta, op_jt[1]; atol=1e-13)
+    @test isapprox(op.optics_x.alpha, op_jt[2]; atol=1e-13)
+    @test isapprox(op.optics_y.beta, op_jt[3]; atol=1e-13)
+    @test isapprox(op.optics_y.alpha, op_jt[4]; atol=1e-13)
 
     twr = twissring(ring, 0.0, 0; E0=3.0e9, m0=M_ELECTRON)
     @test twr isa TwissResult
@@ -299,122 +282,122 @@ end
     twline_ref = twissline(tin, ring, 0.0, 0, refpts; E0=3.0e9, m0=M_ELECTRON)
     @test length(twline_ref) == length(refpts)
     @test twline_ref[end] isa optics4DUC
-    twj_ref = JuTrack.twissring(ring_jt, 0.0, 0, refpts; E0=3.0e9, m0=JuTrack.m_e)
+    # one [betax, alphax, betay, alphay] per refpt, from JuTrack.twissring
+    twj_ref = jutrack_reference("optics/twissring_refpts")
     for i in eachindex(refpts)
-        @test isapprox(twline_ref[i].optics_x.beta, twj_ref[i].betax; atol=1e-13)
-        @test isapprox(twline_ref[i].optics_x.alpha, twj_ref[i].alphax; atol=1e-13)
-        @test isapprox(twline_ref[i].optics_y.beta, twj_ref[i].betay; atol=1e-13)
-        @test isapprox(twline_ref[i].optics_y.alpha, twj_ref[i].alphay; atol=1e-13)
+        @test isapprox(twline_ref[i].optics_x.beta, twj_ref[i][1]; atol=1e-13)
+        @test isapprox(twline_ref[i].optics_x.alpha, twj_ref[i][2]; atol=1e-13)
+        @test isapprox(twline_ref[i].optics_y.beta, twj_ref[i][3]; atol=1e-13)
+        @test isapprox(twline_ref[i].optics_y.alpha, twj_ref[i][4]; atol=1e-13)
     end
 end
 
-    @testset "Energy-derivative convention (δP vs δE)" begin
-        # Exact inverses, and stable at finite-difference-sized arguments: a naive
-        # `sqrt(1 + small) - 1` loses ~8 digits at δ ~ 1e-8 and fails this.
-        for β0 in (0.5, 0.875, 0.99, 1.0 - 1.0e-9), δP in (1.0e-12, 1.0e-8, 1.0e-3, 0.1)
-            δE = deltae_from_deltap(δP, β0)
-            @test deltap_from_deltae(δE, β0) ≈ δP rtol=1e-14
-            @test δE ≈ β0 * δP rtol=(10δP + 1e-14)          # first-order limit
-        end
-        # The exact relation, not the linear one.
-        let β0 = 0.875, δP = 0.2
-            @test deltae_from_deltap(δP, β0) ≈ sqrt(1/β0^2 + δP*(2 + δP)) - 1/β0 rtol=1e-13
-        end
-
-        # A 1 GeV-kinetic proton makes β0 a 12.5% effect, far above the FD noise
-        # floor, so this test fails if the conversion is dropped. (At 3 GeV
-        # electrons β0 = 1 - 1.4e-8 and no tolerance could tell them apart.)
-        pbeam = Beam(kinetic=1.0e9, charge=1, mass=M_PROTON)
-        @test 0.87 < pbeam.beta < 0.88
-        ξe = getchrom(ring, pbeam; centered=true, dpp=1.0e-6, wrt=:deltae, method=:fd)
-        ξp = getchrom(ring, pbeam; centered=true, dpp=1.0e-6, method=:fd)
-        @test ξp[1] ≈ pbeam.beta * ξe[1] rtol=1e-6
-        @test ξp[2] ≈ pbeam.beta * ξe[2] rtol=1e-6
-        @test !isapprox(ξp[1], ξe[1]; rtol=1e-3)
-
-        # Dispersion follows the same rule.
-        dring = Lattice(AbstractElement[
-            Quadrupole(0.5, 0.9), Drift(0.4), SBend(1.0, 2π/80; num_int_steps=4),
-            Drift(0.4), Quadrupole(0.5, -0.9), Drift(0.4),
-            SBend(1.0, 2π/80; num_int_steps=4), Drift(0.4),
-        ]; periodic=true)
-        De = periodic_twiss(dring, pbeam; wrt=:deltae)
-        Dp = periodic_twiss(dring, pbeam)
-        @test maximum(abs, De.dx) > 0.1
-        @test Dp.dx ≈ pbeam.beta .* De.dx rtol=1e-10
-        @test Dp.dpx ≈ pbeam.beta .* De.dpx rtol=1e-10
-        @test_throws ArgumentError periodic_twiss(dring, pbeam; wrt=:bogus)
-
-        # Scalar `dp` inputs are δP at every entry point (the convention outer
-        # codes speak); coordinate vectors (`orb`, `reference`) stay in δE.
-        δP = 5.0e-3
-        δE = deltae_from_deltap(δP, pbeam.beta)
-        @test !isapprox(δE, δP; rtol=1e-3)
-        @test findm66(dring, δP, 0; E0=pbeam.energy, m0=pbeam.mass) ==
-              findm66(dring, δE, 0; E0=pbeam.energy, m0=pbeam.mass, wrt=:deltae)
-        @test fastfindm66(dring, δP; E0=pbeam.energy, m0=pbeam.mass) ==
-              fastfindm66(dring, δE; E0=pbeam.energy, m0=pbeam.mass, wrt=:deltae)
-
-        co_p = find_closed_orbit_4d(dring, pbeam; dp=δP)
-        @test co_p ≈ find_closed_orbit_4d(dring, pbeam; dp=δE, wrt=:deltae) atol=1e-14
-        # ... and the conversion is not a no-op for a 1 GeV proton
-        @test !isapprox(co_p, find_closed_orbit_4d(dring, pbeam; dp=δP, wrt=:deltae);
-                        atol=1e-6)
-
-        # `orb` is a coordinate vector: `wrt` must not touch it.
-        orb = [0.0, 0.0, 0.0, 0.0, 0.0, δE]
-        @test fastfindm66(dring, 0.0; E0=pbeam.energy, m0=pbeam.mass, orb=orb) ==
-              fastfindm66(dring, 0.0; E0=pbeam.energy, m0=pbeam.mass, orb=orb,
-                          wrt=:deltae)
-
-        # twissring's dp is likewise δP
-        @test twissring(dring, δP, 0; E0=pbeam.energy, m0=pbeam.mass).betax ==
-              twissring(dring, δE, 0; E0=pbeam.energy, m0=pbeam.mass,
-                        wrt=:deltae).betax
+@testset "Energy-derivative convention (δP vs δE)" begin
+    # Exact inverses, and stable at finite-difference-sized arguments: a naive
+    # `sqrt(1 + small) - 1` loses ~8 digits at δ ~ 1e-8 and fails this.
+    for β0 in (0.5, 0.875, 0.99, 1.0 - 1.0e-9), δP in (1.0e-12, 1.0e-8, 1.0e-3, 0.1)
+        δE = deltae_from_deltap(δP, β0)
+        @test deltap_from_deltae(δE, β0) ≈ δP rtol=1e-14
+        @test δE ≈ β0 * δP rtol=(10δP + 1e-14)          # first-order limit
+    end
+    # The exact relation, not the linear one.
+    let β0 = 0.875, δP = 0.2
+        @test deltae_from_deltap(δP, β0) ≈ sqrt(1/β0^2 + δP*(2 + δP)) - 1/β0 rtol=1e-13
     end
 
-    @testset "Chromaticity is measured about the closed orbit" begin
-        mkring(k2) = Lattice(vcat([AbstractElement[
-            Quadrupole(0.5, 0.9), Drift(0.6), SBend(1.2, 2π/80; num_int_steps=10),
-            Drift(0.6), Sextupole(0.2, k2), Drift(0.6),
-            Quadrupole(0.5, -0.9), Drift(0.6), SBend(1.2, 2π/80; num_int_steps=10),
-            Drift(0.6), Sextupole(0.2, -k2), Drift(0.6),
-        ] for _ in 1:20]...); periodic=true)
-        sring = mkring(3.0)
-        bare = mkring(0.0)
+    # A 1 GeV-kinetic proton makes β0 a 12.5% effect, far above the FD noise
+    # floor, so this test fails if the conversion is dropped. (At 3 GeV
+    # electrons β0 = 1 - 1.4e-8 and no tolerance could tell them apart.)
+    pbeam = Beam(kinetic=1.0e9, charge=1, mass=M_PROTON)
+    @test 0.87 < pbeam.beta < 0.88
+    ξe = getchrom(ring, pbeam; centered=true, dpp=1.0e-6, wrt=:deltae, method=:fd)
+    ξp = getchrom(ring, pbeam; centered=true, dpp=1.0e-6, method=:fd)
+    @test ξp[1] ≈ pbeam.beta * ξe[1] rtol=1e-6
+    @test ξp[2] ≈ pbeam.beta * ξe[2] rtol=1e-6
+    @test !isapprox(ξp[1], ξe[1]; rtol=1e-3)
 
-        ξ_co = getchrom(sring, beam; centered=true, dpp=1.0e-6, method=:fd)
-        # Reference for the on-axis launch (JuTrack's convention), computed by
-        # hand from the tune of the Jacobian at (0,0,0,0,0,±δ): genuinely a
-        # different number, which is why TrackPad does not offer it.
-        tune_ax(δP) = TrackPad._tune_from_map(findm66(sring, δP, 0; E0=beam.energy, m0=beam.mass))
-        ξ_ax = ((tune_ax(1e-6)[1] - tune_ax(-1e-6)[1]) / 2e-6,
-                (tune_ax(1e-6)[2] - tune_ax(-1e-6)[2]) / 2e-6)
-        @test !isapprox(ξ_co[1], ξ_ax[1]; rtol=1e-4)
-        @test !isapprox(ξ_co[2], ξ_ax[2]; rtol=1e-4)
-        @test_throws ArgumentError getchrom(sring, beam; method=:bogus)
-        @test_throws ArgumentError getchrom(Lattice(sring.elements), beam)   # open line: no closed orbit
+    # Dispersion follows the same rule.
+    dring = Lattice(AbstractElement[
+        Quadrupole(0.5, 0.9), Drift(0.4), SBend(1.0, 2π/80; num_int_steps=4),
+        Drift(0.4), Quadrupole(0.5, -0.9), Drift(0.4),
+        SBend(1.0, 2π/80; num_int_steps=4), Drift(0.4),
+    ]; periodic=true)
+    De = periodic_twiss(dring, pbeam; wrt=:deltae)
+    Dp = periodic_twiss(dring, pbeam)
+    @test maximum(abs, De.dx) > 0.1
+    @test Dp.dx ≈ pbeam.beta .* De.dx rtol=1e-10
+    @test Dp.dpx ≈ pbeam.beta .* De.dpx rtol=1e-10
+    @test_throws ArgumentError periodic_twiss(dring, pbeam; wrt=:bogus)
 
-        # Sextupole feed-down identity, Δξx = +(1/4π)Σ βx (k2 L) D and
-        # Δξy = -(1/4π)Σ βy (k2 L) D. This holds only if getchrom,
-        # periodic_twiss and getchrom share one convention, so it pins the
-        # closed-orbit default and the δP dispersion together.
-        ξ0 = getchrom(bare, beam; centered=true, dpp=1.0e-6, method=:fd)
-        tw = periodic_twiss(sring, beam)
-        dsp = tw
-        ax = 0.0
-        ay = 0.0
-        for (i, el) in enumerate(sring.elements)
-            el isa Sextupole || continue
-            bx = (tw.betax[i] + tw.betax[i + 1]) / 2
-            by = (tw.betay[i] + tw.betay[i + 1]) / 2
-            D = (dsp.dx[i] + dsp.dx[i + 1]) / 2
-            ax += bx * (el.k2 * el.L) * D / (4π)
-            ay -= by * (el.k2 * el.L) * D / (4π)
-        end
-        @test ax ≈ ξ_co[1] - ξ0[1] rtol=2e-3
-        @test ay ≈ ξ_co[2] - ξ0[2] rtol=2e-3
-        # The on-axis launch satisfies it far less well.
-        @test abs(ax / (ξ_ax[1] - ξ0[1]) - 1) > 5 * abs(ax / (ξ_co[1] - ξ0[1]) - 1)
+    # Scalar `dp` inputs are δP at every entry point (the convention outer
+    # codes speak); coordinate vectors (`orb`, `reference`) stay in δE.
+    δP = 5.0e-3
+    δE = deltae_from_deltap(δP, pbeam.beta)
+    @test !isapprox(δE, δP; rtol=1e-3)
+    @test findm66(dring, δP, 0; E0=pbeam.energy, m0=pbeam.mass) ==
+          findm66(dring, δE, 0; E0=pbeam.energy, m0=pbeam.mass, wrt=:deltae)
+    @test fastfindm66(dring, δP; E0=pbeam.energy, m0=pbeam.mass) ==
+          fastfindm66(dring, δE; E0=pbeam.energy, m0=pbeam.mass, wrt=:deltae)
+
+    co_p = find_closed_orbit_4d(dring, pbeam; dp=δP)
+    @test co_p ≈ find_closed_orbit_4d(dring, pbeam; dp=δE, wrt=:deltae) atol=1e-14
+    # ... and the conversion is not a no-op for a 1 GeV proton
+    @test !isapprox(co_p, find_closed_orbit_4d(dring, pbeam; dp=δP, wrt=:deltae);
+                    atol=1e-6)
+
+    # `orb` is a coordinate vector: `wrt` must not touch it.
+    orb = [0.0, 0.0, 0.0, 0.0, 0.0, δE]
+    @test fastfindm66(dring, 0.0; E0=pbeam.energy, m0=pbeam.mass, orb=orb) ==
+          fastfindm66(dring, 0.0; E0=pbeam.energy, m0=pbeam.mass, orb=orb,
+                      wrt=:deltae)
+
+    # twissring's dp is likewise δP
+    @test twissring(dring, δP, 0; E0=pbeam.energy, m0=pbeam.mass).betax ==
+          twissring(dring, δE, 0; E0=pbeam.energy, m0=pbeam.mass,
+                    wrt=:deltae).betax
+end
+
+@testset "Chromaticity is measured about the closed orbit" begin
+    mkring(k2) = Lattice(vcat([AbstractElement[
+        Quadrupole(0.5, 0.9), Drift(0.6), SBend(1.2, 2π/80; num_int_steps=10),
+        Drift(0.6), Sextupole(0.2, k2), Drift(0.6),
+        Quadrupole(0.5, -0.9), Drift(0.6), SBend(1.2, 2π/80; num_int_steps=10),
+        Drift(0.6), Sextupole(0.2, -k2), Drift(0.6),
+    ] for _ in 1:20]...); periodic=true)
+    sring = mkring(3.0)
+    bare = mkring(0.0)
+
+    ξ_co = getchrom(sring, beam; centered=true, dpp=1.0e-6, method=:fd)
+    # Reference for the on-axis launch (JuTrack's convention), computed by
+    # hand from the tune of the Jacobian at (0,0,0,0,0,±δ): genuinely a
+    # different number, which is why TrackPad does not offer it.
+    tune_ax(δP) = TrackPad._tune_from_map(findm66(sring, δP, 0; E0=beam.energy, m0=beam.mass))
+    ξ_ax = ((tune_ax(1e-6)[1] - tune_ax(-1e-6)[1]) / 2e-6,
+            (tune_ax(1e-6)[2] - tune_ax(-1e-6)[2]) / 2e-6)
+    @test !isapprox(ξ_co[1], ξ_ax[1]; rtol=1e-4)
+    @test !isapprox(ξ_co[2], ξ_ax[2]; rtol=1e-4)
+    @test_throws ArgumentError getchrom(sring, beam; method=:bogus)
+    @test_throws ArgumentError getchrom(Lattice(sring.elements), beam)   # open line: no closed orbit
+
+    # Sextupole feed-down identity, Δξx = +(1/4π)Σ βx (k2 L) D and
+    # Δξy = -(1/4π)Σ βy (k2 L) D. This holds only if getchrom,
+    # periodic_twiss and getchrom share one convention, so it pins the
+    # closed-orbit default and the δP dispersion together.
+    ξ0 = getchrom(bare, beam; centered=true, dpp=1.0e-6, method=:fd)
+    tw = periodic_twiss(sring, beam)
+    dsp = tw
+    ax = 0.0
+    ay = 0.0
+    for (i, el) in enumerate(sring.elements)
+        el isa Sextupole || continue
+        bx = (tw.betax[i] + tw.betax[i + 1]) / 2
+        by = (tw.betay[i] + tw.betay[i + 1]) / 2
+        D = (dsp.dx[i] + dsp.dx[i + 1]) / 2
+        ax += bx * (el.k2 * el.L) * D / (4π)
+        ay -= by * (el.k2 * el.L) * D / (4π)
     end
+    @test ax ≈ ξ_co[1] - ξ0[1] rtol=2e-3
+    @test ay ≈ ξ_co[2] - ξ0[2] rtol=2e-3
+    # The on-axis launch satisfies it far less well.
+    @test abs(ax / (ξ_ax[1] - ξ0[1]) - 1) > 5 * abs(ax / (ξ_co[1] - ξ0[1]) - 1)
 end

@@ -639,7 +639,10 @@ not converge away as the steps are refined.
 TrackPad began as a rewrite of JuTrack and keeps JuTrack-style entry points
 (`findm66`, `twissring`, `fastfindm66`, …), but several conventions were
 corrected on the way and are deliberately **not** JuTrack-compatible. Tests that
-compare the two codes apply the corresponding transformations explicitly.
+compare the two codes apply the corresponding transformations explicitly. They
+do not run JuTrack: its side of every comparison is frozen in
+`test/jutrack_reference.jl`, so TrackPad has no JuTrack dependency (see
+`test/jutrack_reference/README.md` for how that data is regenerated).
 
 - **Longitudinal sign.** JuTrack's sixth-pair coordinate is the noncanonical
   positive-delay ``c(t-t_0)``; TrackPad's ``z=-c(t-t_0)`` is canonical and

@@ -12,10 +12,10 @@ cd TrackPad.jl
 julia --project=. -e 'using Pkg; Pkg.instantiate()'
 ```
 
-TrackPad requires Julia 1.12 or newer. It depends on the unregistered
-PolySeries.jl, and the test target on the unregistered JuTrack.jl; both
-locations are given in `Project.toml`'s `[sources]` table and fetched by Pkg
-automatically when this repository is the active project.
+TrackPad requires Julia 1.12 or newer. Its one unregistered dependency is
+PolySeries.jl, the TPSA backend behind the default optics method; its location
+is given in `Project.toml`'s `[sources]` table and fetched by Pkg automatically
+when this repository is the active project.
 
 ## Running the tests
 
@@ -64,7 +64,10 @@ errors. Open `docs/build/index.html` to review.
   in the pull request and a note in the changelog and docs.
 - Cross-code parity tests (JuTrack) pin every convention explicitly —
   `num_int_steps`, `closed_orbit`, `wrt` — so they keep comparing the same
-  model when TrackPad's defaults move.
+  model when TrackPad's defaults move. JuTrack's side of every one of them is
+  frozen in `test/jutrack_reference.jl`, so the suite does not depend on
+  JuTrack; adding a parity case means regenerating that file and reading the
+  diff. See `test/jutrack_reference/README.md`.
 
 ## Reporting problems
 

@@ -172,6 +172,17 @@ Lattice(elements::Vector{E}; name::Symbol=:LATTICE, periodic::Bool=false) where 
 # Allow construction from any iterable of elements
 function Lattice(elements; name::Symbol=:LATTICE, periodic::Bool=false)
     elem_vec = collect(elements)
+    if !(elem_vec isa Vector{<:AbstractElement})
+        # `collect` preserves an `Any` eltype, which would send this method
+        # straight back to itself. That happens for `Any[...]` literals and for
+        # vectors built from variables the compiler had to box (a closure over a
+        # local, say), so narrow the eltype before dispatching.
+        all(e -> e isa AbstractElement, elem_vec) || throw(ArgumentError(
+            "Lattice expects a collection of AbstractElement; got " *
+            string(unique(map(typeof, elem_vec)))))
+        E = mapreduce(typeof, typejoin, elem_vec)
+        elem_vec = convert(Vector{E}, elem_vec)
+    end
     return Lattice(elem_vec; name=name, periodic=periodic)
 end
 

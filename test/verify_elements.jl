@@ -2,7 +2,6 @@ using Test
 using TrackPad
 using LinearAlgebra
 using StaticArrays
-import JuTrack
 Base.include(@__MODULE__, joinpath(@__DIR__, "convention_helpers.jl"))
 
 const PARITY_ATOL = 1e-15
@@ -11,19 +10,7 @@ const PARITY_ATOL = 1e-15
 # ultrarelativistic limit; canonical finite-beta behavior is tested below.
 const ENERGY_VAL = 1.0e15
 
-# Deterministic initial coordinates shared across element parity checks.
-particles_initial = [
-    1.0e-4   2.0e-4   3.0e-4  -1.0e-4   5.0e-5   2.0e-4
-   -2.2e-4  1.7e-4  -1.1e-4   2.3e-4  -7.0e-5   1.0e-4
-    3.5e-4  -2.1e-4  8.0e-5  -1.8e-4   1.4e-4  -2.6e-4
-   -4.0e-4  2.9e-4   1.6e-4   9.0e-5  -1.2e-4   3.1e-4
-    5.2e-4  -3.3e-4 -2.4e-4   1.1e-4   2.6e-4  -3.7e-4
-   -6.1e-4  4.4e-4   2.7e-4  -2.5e-4  -3.0e-4   4.5e-4
-    7.0e-4  -5.2e-4 -3.1e-4   3.4e-4   3.3e-4  -5.0e-4
-   -8.0e-4  6.0e-4   3.9e-4  -4.2e-4  -3.8e-4   5.8e-4
-    9.1e-4  -6.7e-4 -4.6e-4   5.1e-4   4.4e-4  -6.3e-4
-   -9.8e-4  7.3e-4   5.3e-4  -5.9e-4  -4.9e-4   7.1e-4
-]
+const particles_initial = PARITY_PARTICLES
 
 function _track_tp(elem; energy::Float64 = ENERGY_VAL, particles = particles_initial)
     coords = copy(particles)
@@ -32,22 +19,21 @@ function _track_tp(elem; energy::Float64 = ENERGY_VAL, particles = particles_ini
     return coords
 end
 
-function _track_jt(elem; energy::Float64 = ENERGY_VAL, particles = particles_initial, current::Float64 = 0.0)
-    beam = JuTrack.Beam(flip_longitudinal_coordinate(particles), energy = energy, mass = JuTrack.m_e, current = current)
-    JuTrack.linepass!([elem], beam)
-    return flip_longitudinal_coordinate(beam.r)
-end
-
 # JuTrack's exact-bend body evaluates x_new = (pz_new − pzmx·cos + px·sin − 1)/h
 # directly, which cancels O(1) terms and leaves ~ε/h ≈ 1e-15 m of roundoff per
 # step; TrackPad's `exact_bend_body` is algebraically identical but
 # cancellation-free, so the two agree only to JuTrack's roundoff.
 const EXACT_BEND_ATOL = 1e-13
 
-function _assert_parity(name::AbstractString, tp_elem, jt_elem; energy::Float64 = ENERGY_VAL, particles = particles_initial, current::Float64 = 0.0,
-                        atol::Float64 = PARITY_ATOL)
+# Every case is checked against the JuTrack output frozen in
+# test/jutrack_reference.jl under the key "element/<name>".
+const PARITY_CASES = String[]
+
+function _assert_parity(name::AbstractString, tp_elem; energy::Float64 = ENERGY_VAL,
+                        particles = particles_initial, atol::Float64 = PARITY_ATOL)
+    push!(PARITY_CASES, name)
     tp = _track_tp(tp_elem; energy = energy, particles = particles)
-    jt = _track_jt(jt_elem; energy = energy, particles = particles, current = current)
+    jt = jutrack_reference("element/" * name)
     diff_norm = norm(tp - jt)
     diff_max = maximum(abs.(tp - jt))
     @testset "$name" begin
@@ -58,60 +44,34 @@ function _assert_parity(name::AbstractString, tp_elem, jt_elem; energy::Float64 
 end
 
 @testset "Element JuTrack Parity" begin
-    old_exact_beti = JuTrack.use_exact_beti
-    JuTrack.use_exact_beti = 1
-    try
+    begin
         # Core linear/multipole/bend elements.
-        _assert_parity("Marker", Marker(), JuTrack.MARKER())
-        _assert_parity("Drift", Drift(0.7), JuTrack.DRIFT(len = 0.7))
-        _assert_parity("Quadrupole", Quadrupole(0.4, 1.3; num_int_steps = 10), JuTrack.KQUAD(len = 0.4, k1 = 1.3, NumIntSteps = 10))
-        _assert_parity("Sextupole", Sextupole(0.4, 2.0; num_int_steps = 10), JuTrack.KSEXT(len = 0.4, k2 = 2.0, NumIntSteps = 10))
-        _assert_parity("Octupole", Octupole(0.4, -3.0; num_int_steps = 10), JuTrack.KOCT(len = 0.4, k3 = -3.0, NumIntSteps = 10))
-        _assert_parity(
-            "ThinMultipole",
-            ThinMultipole(0.0, [0.0, 0.0, 0.0, 0.0], [0.0, 0.2, -0.1, 0.05]; max_order = 3),
-            JuTrack.thinMULTIPOLE(len = 0.0, PolynomA = [0.0, 0.0, 0.0, 0.0], PolynomB = [0.0, 0.2, -0.1, 0.05], MaxOrder = 3),
-        )
-        _assert_parity("SBend", SBend(0.9, 0.15, 0.03, 0.02; num_int_steps = 10), JuTrack.SBEND(len = 0.9, angle = 0.15, e1 = 0.03, e2 = 0.02, NumIntSteps = 10))
-        _assert_parity("RBend", RBend(0.9, 0.15; num_int_steps = 10), JuTrack.RBEND(len = 0.9, angle = 0.15, NumIntSteps = 10))
-        _assert_parity("ExactSBend", ExactSBend(0.9, 0.15, 0.03, 0.02; num_int_steps = 10), JuTrack.ESBEND(len = 0.9, angle = 0.15, e1 = 0.03, e2 = 0.02, NumIntSteps = 10); atol = EXACT_BEND_ATOL)
-        _assert_parity("ERBend", ERBend(0.9, 0.15; num_int_steps = 10), JuTrack.ERBEND(len = 0.9, angle = 0.15, NumIntSteps = 10); atol = EXACT_BEND_ATOL)
+        _assert_parity("Marker", Marker())
+        _assert_parity("Drift", Drift(0.7))
+        _assert_parity("Quadrupole", Quadrupole(0.4, 1.3; num_int_steps = 10))
+        _assert_parity("Sextupole", Sextupole(0.4, 2.0; num_int_steps = 10))
+        _assert_parity("Octupole", Octupole(0.4, -3.0; num_int_steps = 10))
+        _assert_parity("ThinMultipole", ThinMultipole(0.0, [0.0, 0.0, 0.0, 0.0], [0.0, 0.2, -0.1, 0.05]; max_order = 3))
+        _assert_parity("SBend", SBend(0.9, 0.15, 0.03, 0.02; num_int_steps = 10))
+        _assert_parity("RBend", RBend(0.9, 0.15; num_int_steps = 10))
+        _assert_parity("ExactSBend", ExactSBend(0.9, 0.15, 0.03, 0.02; num_int_steps = 10); atol = EXACT_BEND_ATOL)
+        _assert_parity("ERBend", ERBend(0.9, 0.15; num_int_steps = 10); atol = EXACT_BEND_ATOL)
 
         # RF/cavity and related maps.
-        _assert_parity(
-            "RFCavity",
-            RFCavity(0.3, 2.0e6, 500.0e6, 0.002; h = 1200.0, philag = 0.3, energy = ENERGY_VAL),
-            JuTrack.RFCA(len = 0.3, volt = 2.0e6, freq = 500.0e6, lag = 0.002, h = 1200.0, philag = 0.3, energy = ENERGY_VAL),
-        )
-        _assert_parity(
-            "CrabCavity",
-            CrabCavity(0.3; volt = 2.0e6, freq = 500.0e6, phi = 0.1, energy = ENERGY_VAL),
-            JuTrack.CRABCAVITY(len = 0.3, volt = 2.0e6, freq = 500.0e6, phi = 0.1, energy = ENERGY_VAL),
-        )
-        _assert_parity(
-            "AccelCavity",
-            AccelCavity(0.0; volt = 2.5e6, freq = 500.0e6, h = 1200.0, phis = 0.2, energy = ENERGY_VAL),
-            JuTrack.AccelCavity(len = 0.0, volt = 2.5e6, freq = 500.0e6, h = 1200.0, phis = 0.2),
-        )
+        _assert_parity("RFCavity", RFCavity(0.3, 2.0e6, 500.0e6, 0.002; h = 1200.0, philag = 0.3, energy = ENERGY_VAL))
+        _assert_parity("CrabCavity", CrabCavity(0.3; volt = 2.0e6, freq = 500.0e6, phi = 0.1, energy = ENERGY_VAL))
+        _assert_parity("AccelCavity", AccelCavity(0.0; volt = 2.5e6, freq = 500.0e6, h = 1200.0, phis = 0.2, energy = ENERGY_VAL))
         # Auxiliary helpers.
-        _assert_parity("Solenoid", Solenoid(0.5, 0.8), JuTrack.SOLENOID(len = 0.5, ks = 0.8))
-        _assert_parity("Corrector", Corrector(0.4, 1.5e-4, -2.2e-4), JuTrack.CORRECTOR(len = 0.4, xkick = 1.5e-4, ykick = -2.2e-4))
-        _assert_parity("HKicker", HKicker(L = 0.0, xkick = 2.5e-4), JuTrack.HKICKER(len = 0.0, xkick = 2.5e-4))
-        _assert_parity("VKicker", VKicker(L = 0.0, ykick = -1.5e-4), JuTrack.VKICKER(len = 0.0, ykick = -1.5e-4))
-        _assert_parity("YRotation", YRotation(0.0; angle = 0.02), JuTrack.YROTATION(len = 0.0, angle = 0.02))
-        _assert_parity("Wiggler", Wiggler(1.2; lw = 0.2, Bmax = 0.8, Nsteps = 8), JuTrack.WIGGLER(len = 1.2, lw = 0.2, Bmax = 0.8, Nsteps = 8))
+        _assert_parity("Solenoid", Solenoid(0.5, 0.8))
+        _assert_parity("Corrector", Corrector(0.4, 1.5e-4, -2.2e-4))
+        _assert_parity("HKicker", HKicker(L = 0.0, xkick = 2.5e-4))
+        _assert_parity("VKicker", VKicker(L = 0.0, ykick = -1.5e-4))
+        _assert_parity("YRotation", YRotation(0.0; angle = 0.02))
+        _assert_parity("Wiggler", Wiggler(1.2; lw = 0.2, Bmax = 0.8, Nsteps = 8))
         # Vertical wiggler harmonics need kx != 0 (the field decays along x);
         # degenerate all-zero wave-vector blocks produce NaN in both codes.
-        _assert_parity(
-            "Wiggler vertical harmonics",
-            Wiggler(1.2; lw = 0.2, Bmax = 0.8, Nsteps = 8, By = Int[], Bx = [1, 1, 1, 0, 1, 0]),
-            JuTrack.WIGGLER(len = 1.2, lw = 0.2, Bmax = 0.8, Nsteps = 8, By = Int[], Bx = [1, 1, 1, 0, 1, 0]),
-        )
-        _assert_parity(
-            "Wiggler mixed harmonics",
-            Wiggler(1.2; lw = 0.2, Bmax = 0.8, Nsteps = 8, By = [1, 1, 0, 1, 1, 0], Bx = [1, 2, 1, 0, 1, 0]),
-            JuTrack.WIGGLER(len = 1.2, lw = 0.2, Bmax = 0.8, Nsteps = 8, By = [1, 1, 0, 1, 1, 0], Bx = [1, 2, 1, 0, 1, 0]),
-        )
+        _assert_parity("Wiggler vertical harmonics", Wiggler(1.2; lw = 0.2, Bmax = 0.8, Nsteps = 8, By = Int[], Bx = [1, 1, 1, 0, 1, 0]))
+        _assert_parity("Wiggler mixed harmonics", Wiggler(1.2; lw = 0.2, Bmax = 0.8, Nsteps = 8, By = [1, 1, 0, 1, 1, 0], Bx = [1, 2, 1, 0, 1, 0]))
 
         # Translation longitudinal shift follows TrackPad's negated z axis and
         # is drift-consistent; with dx = dy = 0 it must equal a Drift of ds
@@ -142,89 +102,36 @@ end
         @test SBend(0.9, 0.15; max_order = 2).max_order == 2  # user value kept
         @test ExactSBend(0.9, 0.15; polynom_b = [0.0, 0.0, 0.0, 0.7]).max_order == 3
         @test SBendSC(1.0, 0.2; polynom_b = [0.0, 0.3, 0.0, 0.0]).max_order == 1
-        _assert_parity(
-            "SBend gradient auto-order",
-            SBend(0.9, 0.15, 0.03, 0.02; num_int_steps = 10,
-                  polynom_b = [0.0, 0.3, 0.0, 0.0]),
-            JuTrack.SBEND(len = 0.9, angle = 0.15, e1 = 0.03, e2 = 0.02,
-                          NumIntSteps = 10, PolynomB = [0.0, 0.3, 0.0, 0.0]),
-        )
-        _assert_parity(
-            "RBend gradient auto-order",
-            RBend(0.9, 0.15; num_int_steps = 10, polynom_b = [0.0, 0.25, 0.0, 0.0]),
-            JuTrack.RBEND(len = 0.9, angle = 0.15, NumIntSteps = 10,
-                          PolynomB = [0.0, 0.25, 0.0, 0.0]),
-        )
+        _assert_parity("SBend gradient auto-order", SBend(0.9, 0.15, 0.03, 0.02; num_int_steps = 10,
+                  polynom_b = [0.0, 0.3, 0.0, 0.0]))
+        _assert_parity("RBend gradient auto-order", RBend(0.9, 0.15; num_int_steps = 10, polynom_b = [0.0, 0.25, 0.0, 0.0]))
 
         # Forest (13.29) multipole entrance/exit fringes.
-        _assert_parity(
-            "Quadrupole fringes",
-            Quadrupole(0.4, 1.3; num_int_steps = 10, fringe_entrance = 1, fringe_exit = 1),
-            JuTrack.KQUAD(len = 0.4, k1 = 1.3, NumIntSteps = 10,
-                          FringeQuadEntrance = 1, FringeQuadExit = 1),
-        )
-        _assert_parity(
-            "Sextupole fringes",
-            Sextupole(0.4, 2.0; num_int_steps = 10, fringe_entrance = 1),
-            JuTrack.KSEXT(len = 0.4, k2 = 2.0, NumIntSteps = 10, FringeQuadEntrance = 1),
-        )
-        _assert_parity(
-            "Octupole fringes",
-            Octupole(0.4, -3.0; num_int_steps = 10, fringe_exit = 1),
-            JuTrack.KOCT(len = 0.4, k3 = -3.0, NumIntSteps = 10, FringeQuadExit = 1),
-        )
-        _assert_parity(
-            "ThinMultipole fringes",
-            ThinMultipole(0.0, [0.0, 0.0, 0.0, 0.0], [0.0, 0.2, -0.1, 0.05];
-                          max_order = 3, fringe_entrance = 1),
-            JuTrack.thinMULTIPOLE(len = 0.0, PolynomA = [0.0, 0.0, 0.0, 0.0],
-                                  PolynomB = [0.0, 0.2, -0.1, 0.05], MaxOrder = 3,
-                                  FringeQuadEntrance = 1),
-        )
-        _assert_parity(
-            "SBend quad-fringe gates",
-            SBend(0.9, 0.15, 0.03, 0.02; num_int_steps = 10,
-                  fringe_quad_entrance = 1, fringe_quad_exit = 1),
-            JuTrack.SBEND(len = 0.9, angle = 0.15, e1 = 0.03, e2 = 0.02,
-                          NumIntSteps = 10, FringeQuadEntrance = 1, FringeQuadExit = 1),
-        )
-        _assert_parity(
-            "ExactSBend quad-fringe ordering",
-            ExactSBend(0.9, 0.15, 0.03, 0.02; num_int_steps = 10,
-                       fringe_quad_entrance = 1, fringe_quad_exit = 1),
-            JuTrack.ESBEND(len = 0.9, angle = 0.15, e1 = 0.03, e2 = 0.02,
-                           NumIntSteps = 10, FringeQuadEntrance = 1,
-                           FringeQuadExit = 1);
-            atol = EXACT_BEND_ATOL,
-        )
-        _assert_parity(
-            "Sextupole kick angle with fringes",
-            Sextupole(0.4, 2.0; num_int_steps = 10,
+        _assert_parity("Quadrupole fringes", Quadrupole(0.4, 1.3; num_int_steps = 10, fringe_entrance = 1, fringe_exit = 1))
+        _assert_parity("Sextupole fringes", Sextupole(0.4, 2.0; num_int_steps = 10, fringe_entrance = 1))
+        _assert_parity("Octupole fringes", Octupole(0.4, -3.0; num_int_steps = 10, fringe_exit = 1))
+        _assert_parity("ThinMultipole fringes", ThinMultipole(0.0, [0.0, 0.0, 0.0, 0.0], [0.0, 0.2, -0.1, 0.05];
+                          max_order = 3, fringe_entrance = 1))
+        _assert_parity("SBend quad-fringe gates", SBend(0.9, 0.15, 0.03, 0.02; num_int_steps = 10,
+                  fringe_quad_entrance = 1, fringe_quad_exit = 1))
+        _assert_parity("ExactSBend quad-fringe ordering", ExactSBend(0.9, 0.15, 0.03, 0.02; num_int_steps = 10,
+                       fringe_quad_entrance = 1, fringe_quad_exit = 1); atol = EXACT_BEND_ATOL)
+        _assert_parity("Sextupole kick angle with fringes", Sextupole(0.4, 2.0; num_int_steps = 10,
                       kick_angle = [1.2e-4, -0.8e-4],
-                      fringe_entrance = 1, fringe_exit = 1),
-            JuTrack.KSEXT(len = 0.4, k2 = 2.0, NumIntSteps = 10,
-                          KickAngle = [1.2e-4, -0.8e-4],
-                          FringeQuadEntrance = 1, FringeQuadExit = 1),
-        )
-        _assert_parity(
-            "Octupole kick angle with fringes",
-            Octupole(0.4, -3.0; num_int_steps = 10,
+                      fringe_entrance = 1, fringe_exit = 1))
+        _assert_parity("Octupole kick angle with fringes", Octupole(0.4, -3.0; num_int_steps = 10,
                      kick_angle = [-0.7e-4, 1.1e-4],
-                     fringe_entrance = 1, fringe_exit = 1),
-            JuTrack.KOCT(len = 0.4, k3 = -3.0, NumIntSteps = 10,
-                         KickAngle = [-0.7e-4, 1.1e-4],
-                         FringeQuadEntrance = 1, FringeQuadExit = 1),
-        )
+                     fringe_entrance = 1, fringe_exit = 1))
 
         # Space-charge canonical family.
-        _assert_parity("DriftSC", DriftSC(0.5; a = 0.01, b = 0.02, Nl = 12, Nm = 14, Nsteps = 2), JuTrack.DRIFT_SC(len = 0.5, a = 0.01, b = 0.02, Nl = 12, Nm = 14, Nsteps = 2))
-        _assert_parity("QuadrupoleSC", QuadrupoleSC(0.4; k1 = 0.0, a = 0.01, b = 0.02, num_int_steps = 10), JuTrack.KQUAD_SC(len = 0.4, k1 = 0.0, a = 0.01, b = 0.02))
-        _assert_parity("SextupoleSC", SextupoleSC(0.3; k2 = 2.4, a = 0.01, b = 0.02, num_int_steps = 10), JuTrack.KSEXT_SC(len = 0.3, k2 = 2.4, a = 0.01, b = 0.02))
-        _assert_parity("OctupoleSC", OctupoleSC(0.2; k3 = 3.6, a = 0.01, b = 0.02, num_int_steps = 10), JuTrack.KOCT_SC(len = 0.2, k3 = 3.6, a = 0.01, b = 0.02))
-        _assert_parity("SBendSC", SBendSC(1.0, 0.0, 0.0, 0.0; a = 0.01, b = 0.02, num_int_steps = 10), JuTrack.SBEND_SC(len = 1.0, angle = 0.0, e1 = 0.0, e2 = 0.0, a = 0.01, b = 0.02))
-        _assert_parity("RBendSC", RBendSC(1.2, 0.0), JuTrack.RBEND_SC(len = 1.2, angle = 0.0))
-        _assert_parity("LBend", LBend(0.7, 0.0; K = 0.0), JuTrack.LBEND(len = 0.7, angle = 0.0, K = 0.0))
-        _assert_parity("SpaceCharge", SpaceCharge(0.9; effective_len = 0.4, Nl = 11, Nm = 9, a = 0.015, b = 0.017), JuTrack.SPACECHARGE(len = 0.9, effective_len = 0.4, Nl = 11, Nm = 9, a = 0.015, b = 0.017))
+        _assert_parity("DriftSC", DriftSC(0.5; a = 0.01, b = 0.02, Nl = 12, Nm = 14, Nsteps = 2))
+        _assert_parity("QuadrupoleSC", QuadrupoleSC(0.4; k1 = 0.0, a = 0.01, b = 0.02, num_int_steps = 10))
+        _assert_parity("SextupoleSC", SextupoleSC(0.3; k2 = 2.4, a = 0.01, b = 0.02, num_int_steps = 10))
+        _assert_parity("OctupoleSC", OctupoleSC(0.2; k3 = 3.6, a = 0.01, b = 0.02, num_int_steps = 10))
+        _assert_parity("SBendSC", SBendSC(1.0, 0.0, 0.0, 0.0; a = 0.01, b = 0.02, num_int_steps = 10))
+        _assert_parity("RBendSC", RBendSC(1.2, 0.0))
+        _assert_parity("LBend", LBend(0.7, 0.0; K = 0.0))
+        _assert_parity("SpaceCharge", SpaceCharge(0.9; effective_len = 0.4, Nl = 11, Nm = 9, a = 0.015, b = 0.017))
 
         # JuTrack has a Float64 collective RLC pass, but its Beam-owned grid,
         # normalization, and longitudinal coordinate differ from TrackPad's.
@@ -232,21 +139,23 @@ end
         # functions themselves are compared directly at nonzero strength.
         tp_rlc_zero = LongitudinalRLCWake(freq = 1.0e9, Rshunt = 0.0,
                                           Q0 = 1.2, scale = 1.0)
-        jt_rlc_zero = JuTrack.LongitudinalRLCWake(freq = 1.0e9,
-                                                  Rshunt = 0.0, Q0 = 1.2)
-        _assert_parity("LongitudinalRLCWake", tp_rlc_zero, jt_rlc_zero)
+        _assert_parity("LongitudinalRLCWake", tp_rlc_zero)
         tp_rlc = LongitudinalRLCWake(freq = 1.0e9, Rshunt = 1.0e6, Q0 = 1.2)
-        jt_rlc = JuTrack.LongitudinalRLCWake(freq = 1.0e9,
-                                             Rshunt = 1.0e6, Q0 = 1.2)
-        for t in (-2.0e-9, -1.0e-10, 0.0, 1.0e-10)
-            @test wakefieldfunc_RLCWake(tp_rlc, t) ≈
-                  JuTrack.wakefieldfunc_RLCWake(jt_rlc, t) rtol = 1.0e-15
+        for (t, w) in zip(jutrack_reference("wake/rlc_delays"), jutrack_reference("wake/rlc"))
+            @test wakefieldfunc_RLCWake(tp_rlc, t) ≈ w rtol = 1.0e-15
         end
         # StrongGaussianBeam is not compared with JuTrack: JuTrack's beam-beam
         # code is a placeholder. See test/verify_beambeam.jl.
-    finally
-        JuTrack.use_exact_beti = old_exact_beti
     end
+end
+
+@testset "Every parity case has frozen reference data" begin
+    # A case added here without regenerating test/jutrack_reference.jl, or a
+    # reference left behind by a deleted case, is a silent hole in the parity
+    # net; both fail here instead.
+    recorded = Set(k[9:end] for k in keys(JUTRACK_REFERENCE) if startswith(k, "element/"))
+    @test Set(PARITY_CASES) == recorded
+    @test length(PARITY_CASES) == length(unique(PARITY_CASES))
 end
 
 @testset "Wiggler constructor validation" begin
@@ -582,46 +491,33 @@ end
 @testset "Aperture loss parity" begin
     # Two macroparticles sit outside the apertures; both codes must flag
     # exactly those and keep identical evolved coordinates.
-    wide = vcat(particles_initial,
-                [2.0e-3 0.0 0.0 0.0 1.0e-3 0.0
-                 0.0 0.0 2.0e-3 0.0 1.0e-3 0.0])
+    wide = jutrack_reference("aperture/particles")
     rap = [-5.0e-4, 5.0e-4, -5.0e-4, 5.0e-4, 0.0, 0.0]
     eap = [1.0e-3, 8.0e-4, 0.0, 0.0, 0.0, 0.0]
 
-    function run_aperture_pair(elem_tp, elem_jt)
-        tpb = jutrack_beam(ENERGY_VAL)
-        jtb = JuTrack.Beam(flip_longitudinal_coordinate(wide),
-                           energy = ENERGY_VAL, mass = JuTrack.m_e)
+    function run_aperture(elem_tp)
         c = copy(wide)
         lf = zeros(Int, size(c, 1))
-        linepass!(c, Lattice([elem_tp]), tpb, lf)
-        JuTrack.linepass!([elem_jt], jtb)
-        return c, lf, flip_longitudinal_coordinate(jtb.r), jtb.lost_flag
+        linepass!(c, Lattice([elem_tp]), jutrack_beam(ENERGY_VAL), lf)
+        return c, lf
     end
 
     cases = [
-        ("Drift rectangular",
-         Drift(0.7; r_apertures = rap),
-         JuTrack.DRIFT(len = 0.7, RApertures = collect(rap))),
-        ("Drift elliptical",
-         Drift(0.7; e_apertures = eap),
-         JuTrack.DRIFT(len = 0.7, EApertures = collect(eap))),
-        ("SBend rectangular",
-         SBend(0.9, 0.15; num_int_steps = 10, r_apertures = rap),
-         JuTrack.SBEND(len = 0.9, angle = 0.15, NumIntSteps = 10,
-                       RApertures = collect(rap))),
+        ("Drift rectangular", Drift(0.7; r_apertures = rap)),
+        ("Drift elliptical",  Drift(0.7; e_apertures = eap)),
+        ("SBend rectangular", SBend(0.9, 0.15; num_int_steps = 10, r_apertures = rap)),
     ]
-    @testset "$name" for (name, etp, ejt) in cases
-        c, lf, jr, jlf = run_aperture_pair(etp, ejt)
-        @test lf == jlf
+    @testset "$name" for (name, etp) in cases
+        c, lf = run_aperture(etp)
+        @test lf == jutrack_reference("aperture/$name/lost")
         @test sum(lf) == 2  # exactly the two out-of-aperture macroparticles
-        @test c ≈ jr atol = PARITY_ATOL
+        @test c ≈ jutrack_reference("aperture/$name/r") atol = PARITY_ATOL
     end
 
     # Without apertures nobody is lost.
-    c, lf, jr, jlf = run_aperture_pair(Drift(0.7), JuTrack.DRIFT(len = 0.7))
+    c, lf = run_aperture(Drift(0.7))
     @test lf == zeros(Int, length(lf))
-    @test jlf == zeros(Int, length(jlf))
+    @test jutrack_reference("aperture/Drift open/lost") == zeros(Int, length(lf))
 end
 
 @testset "Element Gaps" begin

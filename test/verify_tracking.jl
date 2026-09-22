@@ -151,3 +151,18 @@ end
     track!(threaded, lat, beam; nturns=3, time=0.0, dt_turn=0.1, turn=4, threaded=true)
     @test isequal(threaded, coords)
 end
+
+@testset "Lattice narrows an untyped element vector" begin
+    d = Drift(1.0)
+    q = Quadrupole(0.5, 0.6)
+    # `Any[...]` is what a vector of boxed locals (or a REPL `Any` literal)
+    # looks like; it used to send the fallback constructor into itself.
+    homogeneous = Lattice(Any[d, d])
+    @test eltype(homogeneous.elements) === typeof(d)
+    mixed = Lattice(Any[d, q, d]; periodic=true)
+    @test eltype(mixed.elements) <: AbstractElement
+    @test length(mixed.elements) == 3
+    @test isperiodic(mixed)
+    @test linepass(mixed, r0, beam) === linepass(Lattice([d, q, d]), r0, beam)
+    @test_throws ArgumentError Lattice(Any[d, 1.0])
+end
