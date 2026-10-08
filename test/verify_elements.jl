@@ -43,6 +43,24 @@ function _assert_parity(name::AbstractString, tp_elem; energy::Float64 = ENERGY_
     end
 end
 
+"""
+    _assert_divergence(name, tp_elem; lo, hi)
+
+A case where TrackPad deliberately does not match JuTrack. Pins the difference
+into a band so that neither the divergence disappearing nor its size changing
+can pass unnoticed; `lo`/`hi` bracket the difference the physics predicts.
+"""
+function _assert_divergence(name::AbstractString, tp_elem; lo::Float64, hi::Float64,
+                            energy::Float64 = ENERGY_VAL, particles = particles_initial)
+    push!(PARITY_CASES, name)
+    tp = _track_tp(tp_elem; energy = energy, particles = particles)
+    jt = jutrack_reference("element/" * name)
+    diff_max = maximum(abs.(tp - jt))
+    @testset "$name (deliberate divergence)" begin
+        @test lo < diff_max < hi
+    end
+end
+
 @testset "Element JuTrack Parity" begin
     begin
         # Core linear/multipole/bend elements.
@@ -102,9 +120,17 @@ end
         @test SBend(0.9, 0.15; max_order = 2).max_order == 2  # user value kept
         @test ExactSBend(0.9, 0.15; polynom_b = [0.0, 0.0, 0.0, 0.7]).max_order == 3
         @test SBendSC(1.0, 0.2; polynom_b = [0.0, 0.3, 0.0, 0.0]).max_order == 1
-        _assert_parity("SBend gradient auto-order", SBend(0.9, 0.15, 0.03, 0.02; num_int_steps = 10,
-                  polynom_b = [0.0, 0.3, 0.0, 0.0]))
-        _assert_parity("RBend gradient auto-order", RBend(0.9, 0.15; num_int_steps = 10, polynom_b = [0.0, 0.25, 0.0, 0.0]))
+        # Combined-function bends are the one place TrackPad deliberately leaves
+        # JuTrack (and AT): both apply a *straight* multipole kick inside the
+        # bent frame, whose combined-function body field is not Maxwellian at
+        # O(h*K1). TrackPad uses the curved-frame multipole, which reproduces
+        # PTC exact=true and MAD-X; see `_curved_multipole_field` and the
+        # "Differences from JuTrack" section of the conventions page. Over this
+        # element the gap is ~ h*K1*L*x^2 ~ 0.17 * 0.3 * 0.9 * (1e-3)^2 ~ 5e-8.
+        _assert_divergence("SBend gradient auto-order", SBend(0.9, 0.15, 0.03, 0.02; num_int_steps = 10,
+                  polynom_b = [0.0, 0.3, 0.0, 0.0]); lo = 1e-9, hi = 1e-6)
+        _assert_divergence("RBend gradient auto-order", RBend(0.9, 0.15; num_int_steps = 10,
+                  polynom_b = [0.0, 0.25, 0.0, 0.0]); lo = 1e-9, hi = 1e-6)
 
         # Forest (13.29) multipole entrance/exit fringes.
         _assert_parity("Quadrupole fringes", Quadrupole(0.4, 1.3; num_int_steps = 10, fringe_entrance = 1, fringe_exit = 1))

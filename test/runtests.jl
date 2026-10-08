@@ -14,6 +14,7 @@ end
         include_isolated(:VerifyExactBend, "verify_exact_bend.jl")
         include_isolated(:VerifyOptics, "verify_optics.jl")
         include_isolated(:VerifyRingOptics, "verify_ring_optics.jl")
+        include_isolated(:VerifyCurvedMultipole, "verify_curved_multipole.jl")
         include_isolated(:VerifyLatticePlot, "verify_lattice_plot.jl")
         include_isolated(:VerifyDistributions, "verify_distributions.jl")
         include_isolated(:VerifyClosedOrbit, "verify_closed_orbit.jl")

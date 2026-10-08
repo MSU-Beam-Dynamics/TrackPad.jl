@@ -55,6 +55,20 @@ reproduces AT/JuTrack bit-for-bit, which omits it. See
 """
 const SYMPLECTIC_BEND_EDGE = true
 
+"""
+    CURVED_MULTIPOLES
+
+When `true` (the default) the multipoles of a bend are the curved-frame ones:
+the field inside the body satisfies Maxwell's equations in the bent frame, so a
+combined-function bend reproduces PTC (`exact=true`) and MAD-X. `false` applies
+the straight multipole kick that AT, JuTrack and PTC (`exact=false`) use, whose
+combined-function body field is not Maxwellian at `O(h*K1)`; it is reachable
+per call as `_curved_multipole_field(..., Val(false))` for cross-code
+comparison. The two agree exactly for a pure dipole and for `irho == 0`.
+See [`_curved_multipole_field`](@ref) for the derivation.
+"""
+const CURVED_MULTIPOLES = true
+
 # =============================================================================
 # Helper Functions (allocation-free)
 # =============================================================================
@@ -391,11 +405,136 @@ end
 # =============================================================================
 
 """
+    _curved_multipole_field(x, y, polynom_a, polynom_b, irho, max_order) -> (dpx, dpy)
+
+Transverse kick per unit length of a multipole field in a frame bent with
+curvature ``h=\\mathtt{irho}=1/\\rho``, excluding the design dipole. Reduces
+exactly to [`strthinkick`](@ref)'s straight kick when `irho == 0`.
+
+In a bent frame the field term of the Hamiltonian is ``-\\psi`` with
+``\\psi \\equiv (1+hx)\\,a_s``, and Maxwell's equations require
+
+```math
+\\psi_{xx} + \\psi_{yy} - \\frac{h}{1+hx}\\,\\psi_x = 0 .
+```
+
+Writing ``\\psi = \\sum_m \\psi_m(x)\\,y^m`` turns that into the recursion
+``\\psi_{m+2} = -[\\psi_m'' - \\frac{h}{1+hx}\\psi_m']/((m+2)(m+1))``, seeded by
+the midplane field: with ``b(x)=\\sum_n \\mathtt{polynom\\_b}[n{+}1]x^n`` and
+``a(x)`` likewise, so that ``B_y/B\\rho = h+b`` and ``B_x/B\\rho = a`` at
+``y=0``,
+
+```math
+\\psi_0' = -(1+hx)(h+b), \\qquad \\psi_1 = (1+hx)\\,a ,
+```
+
+whence, in closed form,
+
+```math
+\\psi_2 = \\tfrac{1}{2}(1+hx)b' , \\qquad
+\\psi_3 = -\\tfrac{1}{6}\\left[h a' + (1+hx)a'' - \\tfrac{h^2 a}{1+hx}\\right] ,
+```
+```math
+\\psi_4 = -\\tfrac{1}{24}\\left[h b'' + (1+hx)b''' - \\tfrac{h^2 b'}{1+hx}\\right] .
+```
+
+The kick is ``\\mathrm{d}p_x/\\mathrm{d}s = \\psi_x`` and
+``\\mathrm{d}p_y/\\mathrm{d}s = \\psi_y``, so it is the gradient of a single
+scalar and therefore exactly symplectic whatever the truncation. The series in
+``y`` is kept through ``y^4``, which is *exact* for `max_order ≤ 3` when
+`irho == 0` — it is then the straight multipole potential term for term — while
+for `irho ≠ 0` the first neglected term is ``O(h^2 b' y^6)``. The dependence on
+``x`` is exact: the ``1/(1+hx)`` factors are not expanded.
+
+Scaling the straight kick by ``(1+hx)`` is **not** equivalent and is wrong: the
+potential ``(1+hx)b'(x^2-y^2)/2`` does not satisfy the equation above. The
+cubic term of ``\\psi_0`` is what makes the field Maxwellian, and it changes the
+horizontal kick from ``-(hb'/2)(3x^2-y^2)`` to ``-(hb'/2)(2x^2-y^2)``.
+"""
+@inline _curved_multipole_field(x, y, polynom_a, polynom_b, irho, max_order) =
+    _curved_multipole_field(x, y, polynom_a, polynom_b, irho, max_order,
+                            Val(CURVED_MULTIPOLES))
+
+# The straight multipole kick AT, JuTrack and PTC (exact=false) apply inside the
+# bent frame: the field is the one a straight magnet would have, which does not
+# satisfy Maxwell's equations in a curved frame once it has a gradient.
+@inline function _curved_multipole_field(x::S, y::S,
+                                         polynom_a::SVector{N,T},
+                                         polynom_b::SVector{N,T},
+                                         irho::T,
+                                         max_order::Int,
+                                         ::Val{false}) where {T<:Real,N,S}
+    ReSum = polynom_b[max_order + 1]
+    ImSum = polynom_a[max_order + 1]
+    @inbounds for i in max_order:-1:1
+        ReSumTemp = ReSum * x - ImSum * y + polynom_b[i]
+        ImSum = ImSum * x + ReSum * y + polynom_a[i]
+        ReSum = ReSumTemp
+    end
+    return -ReSum, ImSum
+end
+
+@inline function _curved_multipole_field(x::S, y::S,
+                                         polynom_a::SVector{N,T},
+                                         polynom_b::SVector{N,T},
+                                         irho::T,
+                                         max_order::Int,
+                                         ::Val{true}) where {T<:Real,N,S}
+    # Taylor coefficients of the midplane polynomials at x, by repeated
+    # synthetic division: b0 = b(x), b1 = b'(x), b2 = b''(x)/2, b3 = b'''(x)/6.
+    b0 = zero(x); b1 = zero(x); b2 = zero(x); b3 = zero(x)
+    a0 = zero(x); a1 = zero(x); a2 = zero(x); a3 = zero(x)
+    @inbounds for n in max_order:-1:0
+        b3 = b3 * x + b2; b2 = b2 * x + b1; b1 = b1 * x + b0; b0 = b0 * x + polynom_b[n + 1]
+        a3 = a3 * x + a2; a2 = a2 * x + a1; a1 = a1 * x + a0; a0 = a0 * x + polynom_a[n + 1]
+    end
+
+    oh = one(T) + irho * x                     # 1 + h x
+    # h/(1+hx).  The branch is on an element parameter, so it is uniform across
+    # particles (safe on GPU) and keeps a straight element division-free.
+    g  = iszero(irho) ? zero(oh) : irho / oh
+    hg = irho * g                              # h^2/(1+hx)
+
+    psi1 = oh * a0
+    psi2 = oh * b1 / 2
+    psi3 = -(irho * a1 + 2 * oh * a2 - hg * a0) / 6
+    psi4 = -(2 * irho * b2 + 6 * oh * b3 - hg * b1) / 24
+
+    psi1x = irho * a0 + oh * a1
+    psi2x = irho * b1 / 2 + oh * b2
+    psi3x = -(4 * irho * a2 + 6 * oh * a3 - hg * a1 + hg * g * a0) / 6
+    psi4x = -(12 * irho * b3 - 2 * hg * b2 + hg * g * b1) / 24
+
+    dpx = -oh * b0 + (psi1x + (psi2x + (psi3x + psi4x * y) * y) * y) * y
+    dpy = psi1 + (2 * psi2 + (3 * psi3 + 4 * psi4 * y) * y) * y
+    return dpx, dpy
+end
+
+"""
+    bndmultipolekick(r, polynom_a, polynom_b, L, irho, max_order) -> SVector{6,T}
+
+Thin multipole kick inside a bent frame, without the design-dipole terms: the
+companion of [`strthinkick`](@ref) for an integrator whose body map already
+carries the design dipole exactly (`ExactSBend`). Identical to `strthinkick`
+when `irho == 0`.
+"""
+@inline function bndmultipolekick(r::SVector{6,S},
+                                  polynom_a::SVector{N,T},
+                                  polynom_b::SVector{N,T},
+                                  L::T,
+                                  irho::T,
+                                  max_order::Int) where {T<:Real,N,S}
+    dpx, dpy = _curved_multipole_field(r[1], r[3], polynom_a, polynom_b, irho, max_order)
+    return SVector(r[1], r[2] + L * dpx, r[3], r[4] + L * dpy, r[5], r[6])
+end
+
+"""
     bndthinkick(r, polynom_a, polynom_b, L, irho, max_order, beti) -> SVector{6,T}
 
 Apply thin bend kick to particle including curvature (irho) term.
-This is the bend-specific version of strthinkick that adds the dipole
-focusing effect from the curved trajectory.
+This is the bend-specific version of `strthinkick`: the multipole field is the
+curved-frame one of [`_curved_multipole_field`](@ref), and the design dipole
+adds its weak focusing, dispersion drive and path-length terms.
 
 # Arguments
 - `r`: 6D coordinates
@@ -413,21 +552,11 @@ focusing effect from the curved trajectory.
                              irho::T,
                              max_order::Int,
                              beti::T) where {T<:Real,N,S}
-    # Start from highest order
-    ReSum = polynom_b[max_order + 1]
-    ImSum = polynom_a[max_order + 1]
-    
-    # Horner's method for polynomial evaluation
-    @inbounds for i in max_order:-1:1
-        ReSumTemp = ReSum * r[1] - ImSum * r[3] + polynom_b[i]
-        ImSum = ImSum * r[1] + ReSum * r[3] + polynom_a[i]
-        ReSum = ReSumTemp
-    end
-    
-    # Apply kicks to momenta - note the irho term for the bend
-    #   px -= L * (ReSum - (δP - x*irho) * irho)
-    #   py += L * ImSum
-    #   z  -= L * irho * x * dδP/dδE        for z = s/β0 - c*t.
+    dpx, dpy = _curved_multipole_field(r[1], r[3], polynom_a, polynom_b, irho, max_order)
+
+    # The design dipole adds the weak focusing −h²x and the dispersion drive
+    # +hδ_P (its −h cancels the +h of the kinetic curvature term), plus
+    #   z -= L * irho * x * dδ_P/dδ_E        for z = s/β0 − c·t.
     # δP = (P-P0)/P0 is taken from the stored δE through the exact relation
     # (1+δP)² = 1 + 2δE/β0 + δE², in the cancellation-free form
     # δP = δE(2/β0 + δE)/(2+δP); the linearised δE/β0 that AT and JuTrack use
@@ -435,10 +564,10 @@ focusing effect from the curved trajectory.
     # ring depend on the species at O(δ²).
     pnorm = _momentum_norm(r[6], beti)
     dp = r[6] * (2 * beti + r[6]) / (one(T) + pnorm)
-    px_new = r[2] - L * (ReSum - (dp - r[1] * irho) * irho)
-    py_new = r[4] + L * ImSum
+    px_new = r[2] + L * (dpx + (dp - r[1] * irho) * irho)
+    py_new = r[4] + L * dpy
     z_new = r[5] - L * irho * r[1] * (beti + r[6]) / pnorm
-    
+
     return SVector(r[1], px_new, r[3], py_new, z_new, r[6])
 end
 
@@ -1289,11 +1418,11 @@ function pass!(elem::ExactSBend{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,
 
         for _ in 1:elem.num_int_steps
             r = _exact_kernel(exact_bend_body, r, irho, L1, beti)
-            r = _exact_kernel(strthinkick, r, polynom_a, polynom_b, K1, elem.max_order)
+            r = _exact_kernel(bndmultipolekick, r, polynom_a, polynom_b, K1, irho, elem.max_order)
             r = _exact_kernel(exact_bend_body, r, irho, L2, beti)
-            r = _exact_kernel(strthinkick, r, polynom_a, polynom_b, K2, elem.max_order)
+            r = _exact_kernel(bndmultipolekick, r, polynom_a, polynom_b, K2, irho, elem.max_order)
             r = _exact_kernel(exact_bend_body, r, irho, L2, beti)
-            r = _exact_kernel(strthinkick, r, polynom_a, polynom_b, K1, elem.max_order)
+            r = _exact_kernel(bndmultipolekick, r, polynom_a, polynom_b, K1, irho, elem.max_order)
             r = _exact_kernel(exact_bend_body, r, irho, L1, beti)
         end
     end

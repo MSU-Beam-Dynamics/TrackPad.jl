@@ -37,6 +37,10 @@ function supported_gpu_elements(::Type{T}, energy::T) where T
         Sextupole(T(0.15), T(1.1); num_int_steps=4),
         Octupole(T(0.1), T(-1.3); num_int_steps=4),
         SBend(T(0.4), T(0.03), T(0.01), T(0.012); num_int_steps=4),
+        # a combined-function bend, so the curved-frame multipole kick
+        # (`_curved_multipole_field`) is covered on both backends
+        SBend(T(0.4), T(0.12), T(0.01), T(0.012); num_int_steps=4,
+              polynom_b=T[0, 0.9, 1.4, 0], polynom_a=T[0, 0.3, 0, 0]),
         RFCavity(T(0.1), T(2e5), T(80e6), T(2e-4); energy=energy),
         RFCavity(T(0.1), T(2e5), T(80e6), T(2e-4); energy=energy, charge=T(-1)),
         Corrector(T(0.12), T(2e-5), T(-3e-5)),

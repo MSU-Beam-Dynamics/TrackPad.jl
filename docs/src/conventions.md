@@ -429,25 +429,27 @@ TrackPad's arc-length representation before construction.
 
 ### [Bend models and what other codes compute](@id bend_models)
 
-`SBend` is AT's `BndMPoleSymplectic4Pass`: the Hamiltonian expanded to second
-order in the transverse coordinates, so the body has no ``(1+hx)`` factor on
-the kinetic term. `ExactSBend` is Forest's exact sector bend, and by default
-applies the hard-edge dipole fringe at both faces
+`SBend` is AT's `BndMPoleSymplectic4Pass` kinetically: the Hamiltonian expanded
+to second order in the transverse coordinates, so the body has no ``(1+hx)``
+factor on the kinetic term. `ExactSBend` is Forest's exact sector bend, and by
+default applies the hard-edge dipole fringe at both faces
 (`fringe_bend_entrance = fringe_bend_exit = 1`, nonzero even for
-``e_1=e_2=0``). Which one a reference code corresponds to:
+``e_1=e_2=0``). **Both** take their multipoles in the curved frame (see
+[Combined-function bends](@ref curved_multipoles) below), which AT does not.
+Which one a reference code corresponds to:
 
 | Code / model | TrackPad equivalent |
 |---|---|
-| pyAT `BndMPoleSymplectic4Pass` | `SBend` (bit-for-bit) |
+| pyAT `BndMPoleSymplectic4Pass` | `SBend` (bit-for-bit for a bend with no gradient) |
 | PTC `exact=true`, MAD-X `SBEND` (twiss), pyAT `ExactSectorBendPass` | `ExactSBend` |
 | Xsuite `Bend` with `edge_*_model='full'` | `ExactSBend` |
 | Xsuite `Bend` with `edge_*_model='linear'` (its default) | `ExactSBend(...; fringe_bend_entrance=0, fringe_bend_exit=0)` |
 
-On a 24-cell ring of 7.5° bends (``\rho=27.5`` m) the three differ on the
-chromaticity alone: `SBend` gives ``\xi=(12.942, 5.193)``, the exact bend
-without fringe ``(13.431, 5.382)`` and with fringe ``(13.431, 5.449)``; tunes,
-Twiss functions, dispersion, ``\alpha_c`` and the radiation integrals agree
-to ``10^{-7}`` or better. The expanded body misses the term
+On a 24-cell ring of 7.5° bends (``\rho=27.5`` m) **with no gradient** the three
+differ on the chromaticity alone: `SBend` gives ``\xi=(12.942, 5.193)``, the
+exact bend without fringe ``(13.431, 5.382)`` and with fringe ``(13.431,
+5.449)``; tunes, Twiss functions, dispersion, ``\alpha_c`` and the radiation
+integrals agree to ``10^{-7}`` or better. The expanded body misses the term
 ``h\,x\,(p_x^2+p_y^2)/2(1+\delta)`` whose closed-orbit value
 ``h D\,\delta`` acts as a chromatic drift-length change,
 ``\Delta\xi\simeq\frac{1}{4\pi}\oint\gamma\,hD\,\mathrm ds`` — a few
@@ -455,6 +457,50 @@ percent of ``\xi`` at this bending radius, negligible for
 ``\rho\gtrsim100`` m. Use `ExactSBend` when comparing chromaticities with
 MAD-X, PTC or Xsuite on compact rings. `test/verify_ring_optics.jl` pins the
 numbers of all four codes on this ring.
+
+### [Combined-function bends](@id curved_multipoles)
+
+A bend whose `polynom_b`/`polynom_a` are nonzero carries its multipoles in a
+*bent* frame, where the field term of the Hamiltonian is ``-\psi`` with
+``\psi=(1+hx)\,a_s`` and Maxwell's equations read
+
+```math
+\psi_{xx} + \psi_{yy} - \frac{h}{1+hx}\,\psi_x = 0 ,
+```
+
+not Laplace's equation. Writing ``\psi=\sum_m \psi_m(x)y^m`` and seeding with
+the midplane field ``B_y/B\rho = h+b(x)``, ``B_x/B\rho = a(x)`` gives
+``\psi_0' = -(1+hx)(h+b)``, ``\psi_1 = (1+hx)a``, ``\psi_2 = (1+hx)b'/2`` and so
+on; TrackPad evaluates that recursion (`CURVED_MULTIPOLES`, on by default) and
+kicks with ``\mathrm dp_x/\mathrm ds=\psi_x``, ``\mathrm dp_y/\mathrm ds=\psi_y``.
+Being the gradient of one scalar, the kick is exactly symplectic.
+
+For a pure gradient this amounts to
+
+```math
+\Delta p_x' = -hK_1x^2 + \tfrac{1}{2}hK_1y^2, \qquad
+\Delta p_y' = +hK_1xy
+```
+
+on top of the straight kick: vertically an exact sextupole of strength
+``k_2=hK_1``, horizontally that plus ``-hK_1x^2``. The linear optics are
+unchanged — ``x''+(h^2+K_1)x = h\delta`` either way — so this is a purely
+chromatic and geometric effect, and it is **large in compact machines**. On a
+24-cell combined-function ring at ``\rho=11.5`` m it is 220 % of ``\xi_x``:
+
+| model | ``\xi_x`` | ``\xi_y`` |
+|---|---|---|
+| straight multipoles, expanded body (AT, JuTrack, PTC `exact=false`) | −4.7254 | −5.2656 |
+| `SBend` | −2.3298 | −4.7268 |
+| `ExactSBend` = PTC `exact=true` = MAD-X | −1.4737 | −4.5504 |
+
+The error falls off with the curvature — 26 % at ``\rho=23`` m, 5.7 % at 46 m,
+0.3 % at 183 m — so it is invisible in a storage ring and decisive in a
+booster, a medical synchrotron or an FFA. Scaling the straight kick by
+``(1+hx)`` is *not* a shortcut to this: that potential is not a solution of the
+equation above, and the resulting kick is not even symplectic.
+`test/verify_curved_multipole.jl` pins the field equation, the closed form and
+the MAD-X/PTC numbers.
 
 ## RF Phase and Charge
 
@@ -665,6 +711,15 @@ do not run JuTrack: its side of every comparison is frozen in
   JuTrack's number, difference the tunes of
   `findm66(lat, ±dp, beam; reference=SVector(0,0,0,0,0,0), wrt=:deltae)`
   by hand, as `test/verify_optics.jl` does.
+- **Combined-function bends** take their multipoles in the curved frame, so the
+  body field satisfies Maxwell's equations there (`CURVED_MULTIPOLES`); JuTrack
+  and AT apply the straight multipole kick, whose field is not a solution once
+  the bend has a gradient. The difference is a sextupole-like ``hK_1`` term, up
+  to 220 % of ``\xi_x`` on a compact ring — see
+  [Combined-function bends](@ref curved_multipoles). TrackPad's `ExactSBend`
+  thereby reproduces PTC (`exact=true`) and MAD-X, which JuTrack and AT do not;
+  `_curved_multipole_field(..., Val(false))` recovers their kick for
+  comparison. Pure dipoles are unaffected and still agree to the bit.
 - **Dipole edges** carry the longitudinal term that makes the AT-style fringe
   map symplectic (`SYMPLECTIC_BEND_EDGE`); JuTrack and AT omit it.
 - **`Translation`** applies its longitudinal `ds` with the drift-consistent

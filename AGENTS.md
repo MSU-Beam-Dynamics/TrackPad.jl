@@ -84,6 +84,12 @@ not depend on which other packages are loaded.
 - JuTrack parity is only normative where JuTrack uses the same canonical
   variables. Mixed-convention maps are compared in the ultrarelativistic limit;
   finite-`beta` behavior follows `docs/src/conventions.md` and canonical tests.
+- A bend's multipoles live in the curved frame: the body field must satisfy
+  `psi_xx + psi_yy - (h/(1+hx)) psi_x = 0`, which `_curved_multipole_field`
+  solves. Do not "simplify" it to a straight kick scaled by `(1+hx)` — that is
+  not a solution and is not symplectic. AT and JuTrack use the straight kick,
+  so combined-function bends deliberately diverge from them; pure dipoles do
+  not. Keep `src/gpu.jl`'s `_gpu_curved_field` in step.
 - `Sextupole.k2` and `Octupole.k3` are normalized strengths; tracking applies
   the `1/2!` and `1/3!` polynomial factors internally.
 - `RFCavity.lag` is a longitudinal offset in metres, not radians or cycles.

@@ -241,17 +241,52 @@ end
     return px - L*RS, py + L*IS
 end
 
+# Curved-frame multipole field, mirroring `_curved_multipole_field`: the kick
+# per unit length of the multipoles alone, excluding the design dipole.
+@inline function _gpu_curved_field(x::T, y::T,
+                                   pa0::T, pa1::T, pa2::T, pa3::T,
+                                   pb0::T, pb1::T, pb2::T, pb3::T,
+                                   irho::T) where T
+    # Taylor coefficients of the midplane polynomials at x (synthetic division).
+    b0 = pb3; b1 = zero(T); b2 = zero(T); b3 = zero(T)
+    a0 = pa3; a1 = zero(T); a2 = zero(T); a3 = zero(T)
+    b3 = b3*x + b2; b2 = b2*x + b1; b1 = b1*x + b0; b0 = b0*x + pb2
+    a3 = a3*x + a2; a2 = a2*x + a1; a1 = a1*x + a0; a0 = a0*x + pa2
+    b3 = b3*x + b2; b2 = b2*x + b1; b1 = b1*x + b0; b0 = b0*x + pb1
+    a3 = a3*x + a2; a2 = a2*x + a1; a1 = a1*x + a0; a0 = a0*x + pa1
+    b3 = b3*x + b2; b2 = b2*x + b1; b1 = b1*x + b0; b0 = b0*x + pb0
+    a3 = a3*x + a2; a2 = a2*x + a1; a1 = a1*x + a0; a0 = a0*x + pa0
+
+    oh = one(T) + irho*x
+    g  = irho == zero(T) ? zero(T) : irho/oh
+    hg = irho*g
+
+    psi1 = oh*a0
+    psi2 = oh*b1/2
+    psi3 = -(irho*a1 + 2*oh*a2 - hg*a0)/6
+    psi4 = -(2*irho*b2 + 6*oh*b3 - hg*b1)/24
+
+    psi1x = irho*a0 + oh*a1
+    psi2x = irho*b1/2 + oh*b2
+    psi3x = -(4*irho*a2 + 6*oh*a3 - hg*a1 + hg*g*a0)/6
+    psi4x = -(12*irho*b3 - 2*hg*b2 + hg*g*b1)/24
+
+    dpx = -oh*b0 + (psi1x + (psi2x + (psi3x + psi4x*y)*y)*y)*y
+    dpy = psi1 + (2*psi2 + (3*psi3 + 4*psi4*y)*y)*y
+    return dpx, dpy
+end
+
 # Thin bend kick (includes 1/ρ curvature term)
 @inline function _gpu_bndkick(px::T, py::T, z::T, x::T, y::T, d::T,
                                 pa0::T, pa1::T, pa2::T, pa3::T,
                                 pb0::T, pb1::T, pb2::T, pb3::T,
                                 L::T, irho::T, beti::T) where T
-    RS, IS = _gpu_horner(x, y, pa0, pa1, pa2, pa3, pb0, pb1, pb2, pb3)
+    dpx, dpy = _gpu_curved_field(x, y, pa0, pa1, pa2, pa3, pb0, pb1, pb2, pb3, irho)
     # Exact δP from the stored δE, as in `bndthinkick`.
     pnorm = sqrt(one(T) + 2*d*beti + d*d)
     dp = d*(2*beti + d)/(one(T) + pnorm)
-    px_new = px - L*(RS - (dp - x*irho)*irho)
-    py_new = py + L*IS
+    px_new = px + L*(dpx + (dp - x*irho)*irho)
+    py_new = py + L*dpy
     z_new  = z  - L*irho*x*(beti + d)/pnorm
     return px_new, py_new, z_new
 end

@@ -192,6 +192,30 @@ for anyone who used the repository directly.
 
 ### Fixed
 
+- **Combined-function bends now carry the curvature of their gradient.** Inside
+  a bend the field term of the Hamiltonian is ``-\psi`` with
+  ``\psi=(1+hx)a_s``, and Maxwell's equations are
+  ``\psi_{xx}+\psi_{yy}-\tfrac{h}{1+hx}\psi_x=0``, not Laplace's. TrackPad
+  applied a *straight* multipole kick — as AT, JuTrack and PTC `exact=false` do
+  — so the body field of a bend with a gradient was not a real field, missing
+  ``\Delta p_x' = -hK_1x^2 + hK_1y^2/2`` and ``\Delta p_y' = +hK_1xy``:
+  vertically a sextupole of strength ``k_2=hK_1``, horizontally that plus
+  ``-hK_1x^2``. Both `SBend` and `ExactSBend` (and `RBend`, `SBendSC`,
+  `RBendSC`, `ERBend`) now evaluate the curved-frame recursion for the full
+  multipole set, on CPU and GPU. Linear optics are unchanged —
+  ``x''+(h^2+K_1)x=h\delta`` was already right — so this moves only chromatic
+  and geometric quantities, but it moves them a lot in a compact machine: on a
+  24-cell gradient-dipole ring at ``\rho=11.5`` m, ``\xi_x`` goes from −4.7254
+  to −1.4737, and `ExactSBend` now reproduces PTC (`exact=true`) and MAD-X
+  exactly where before it gave −3.8693. The error scales with the curvature
+  (26 % at ``\rho=23`` m, 0.3 % at 183 m), so storage rings are unaffected.
+  `SBend` keeps the expanded kinetic term, so it still differs from PTC
+  `exact=true` by the documented ``hx(p_x^2+p_y^2)/2(1+\delta)`` term, but it
+  is no longer bit-compatible with pyAT/JuTrack for a bend *with a gradient* —
+  `CURVED_MULTIPOLES = false`, or
+  `_curved_multipole_field(..., Val(false))` per call, recovers their kick.
+  Pure dipoles are bit-for-bit unchanged. The two JuTrack parity cases that use
+  a gradient are now pinned as a deliberate, quantified divergence.
 - `Lattice` recursed until it overflowed the stack when given a collection whose
   element type was not narrowed to `AbstractElement` — an `Any[...]` literal, or
   a vector built from locals the compiler had to box. It now narrows the element
