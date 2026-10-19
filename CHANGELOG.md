@@ -132,6 +132,18 @@ for anyone who used the repository directly.
 
 ### Added
 
+- Thick multipoles, bends, SC magnets, and wigglers now implement classical
+  synchrotron-radiation damping with `rad=1` and seeded Gaussian quantum
+  excitation with `rad=2`. The kicks use the exact stored `delta_E` to
+  momentum conversion, are reproducible across serial and threaded tracking,
+  and reject unsupported packed-GPU use. The excitation follows Sands' photon
+  diffusion, so a ring tracked to equilibrium reproduces
+  `Cq γ² I3/(J_E I2)` and `Cq γ² I5/(J_x I2)`. Wiggler radiation no longer
+  applies an extra entrance loss and requires an integral number of periods.
+  Optics functions (`twiss`, `gettune`, `getchrom`, `one_turn_map`,
+  `transfer_map`, `findm66` and friends, `find_closed_orbit_4d/6d`,
+  `tpsa_map`) ignore `rad` and describe the radiation-free machine; only
+  tracking radiates.
 - `Wiggler` takes `mass` and `charge` (electron defaults) and normalises its
   map to the reference particle — kinematics through `E/m`, the wiggler
   parameter through `|q|·Bmax·lw/m`, radiation through the particle's
@@ -192,6 +204,11 @@ for anyone who used the repository directly.
 
 ### Fixed
 
+- `Wiggler` maps propagate TPSA coordinates (`tpsa_map`, `method=:tpsa`
+  optics). The planar-wiggler sinc expansion asked for a type-level
+  `one(CTPS)`, which cannot exist; it now builds the unit from the coordinate.
+  Its kernels sit behind the same series-coordinate inlining barrier as the
+  exact bend's, so the first TPSA map compiles in ~2 s rather than ~2 min.
 - **Combined-function bends now carry the curvature of their gradient.** Inside
   a bend the field term of the Hamiltonian is ``-\psi`` with
   ``\psi=(1+hx)a_s``, and Maxwell's equations are

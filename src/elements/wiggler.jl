@@ -9,10 +9,15 @@ six-value blocks `(index, amplitude, kx/kw, ky/kw, kz/kw, phase)` of the
 element's float type; horizontal-field (`Bx`) blocks require nonzero `kx` and
 `kz`, vertical-field (`By`) blocks nonzero `ky` and `kz`.
 
-The map is normalised to the reference particle: `energy` is the total energy
-in eV (pass `beam.energy`), `mass` the rest-mass energy and `charge` the
-signed charge in `e`. The wiggler parameter scales as `|charge|·Bmax·lw/mass`
-and, with `rad=1`, the radiation term uses the particle's classical radius.
+The radiation-off map and direct `pass!` are normalised by the legacy `energy`,
+`mass`, and `charge` fields for JuTrack compatibility. Radiation-enabled
+high-level `linepass`/`track` require those fields to match the supplied
+[`Beam`](@ref) and use the beam values, preventing a silently inconsistent
+reference energy.
+The wiggler parameter scales as `|charge|·Bmax·lw/mass`. `rad=1` enables
+classical damping and `rad=2` also enables Gaussian quantum excitation for
+macroparticle tracking. `L` must be an integer multiple of `lw` (zero is an
+identity map).
 The deflection sign follows AT's electron convention, so for a positive
 particle a given physical field is represented by `Bmax` of the opposite sign.
 """
@@ -48,6 +53,12 @@ function Wiggler(L;
     bxv = T[T(b) for b in Bx]
     isfinite(L) && L >= zero(T) || throw(ArgumentError("L must be finite and nonnegative"))
     isfinite(lw) && lw > zero(T) || throw(ArgumentError("lw must be finite and positive"))
+    if !iszero(L)
+        nperiods = round(Int, L / lw)
+        isapprox(L, T(nperiods) * lw; rtol=zero(T),
+                 atol=T(32) * eps(T) * max(T(L), T(lw))) ||
+            throw(ArgumentError("Wiggler length L must be an integer multiple of lw"))
+    end
     isfinite(Bmax) || throw(ArgumentError("Bmax must be finite"))
     isfinite(mass) && mass > zero(T) || throw(ArgumentError("mass must be finite and positive"))
     isfinite(charge) && !iszero(charge) || throw(ArgumentError("charge must be finite and nonzero"))

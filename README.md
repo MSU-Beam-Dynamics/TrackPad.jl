@@ -87,7 +87,7 @@ before comparing with another code.
 
 | | |
 |---|---|
-| **Tracking** | `track`, `track!` (one particle or an `N×6` matrix, one pass or many turns, serial or threaded, and on a packed `GPULattice`); `linepass`/`linepass!` for JuTrack-compatible single passes; `ParamSweepLattice` for lazily generated parameter scans |
+| **Tracking** | `track`, `track!` (one particle or an `N×6` matrix, one pass or many turns, serial or threaded, including seeded synchrotron-radiation damping/excitation); `linepass`/`linepass!` for JuTrack-compatible single passes; packed `GPULattice` tracking and lazy `ParamSweepLattice` scans |
 | **Elements** | drifts, quadrupoles, sextupoles, octupoles, thin multipoles, sector/rectangular/exact bends with AT-style or hard-edge fringes, RF/crab/accelerating cavities, solenoids, wigglers, correctors, patches, beam–beam (Bassetti–Erskine, synchro-beam slices), longitudinal wakes, space charge; turn-by-turn or real-time parameters via `timed` |
 | **Optics** | `gettune`, `getchrom`, `twiss` (rings and lines: Twiss, dispersion, αc, ξ; optional ξ₂, I1–I5, ∂Q/∂J; from TPSA maps by default or from tracking; `periodic_twiss`/`transport_twiss`), `one_turn_map`, `find_closed_orbit_4d/6d`, plus JuTrack-style `findm66`, `twissring` |
 | **Beams** | `Beam`; `matched_gaussian` / `gaussian_distribution` with exact finite-sample moments; `beam_covariance`, `projected_emittances`, `eigenemittances` |

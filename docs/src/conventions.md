@@ -83,6 +83,52 @@ Accordingly, ``\sigma_P=\beta_0\sigma_E`` at linear order. The common
 replacement ``\delta_E\simeq\delta_P`` is an ultrarelativistic approximation,
 not TrackPad's definition.
 
+### Synchrotron-radiation coordinates
+
+Radiation tracking changes the canonical energy coordinate directly. For a
+kick ``\Delta\delta_E`` the normalized momentum before and after the kick is
+
+```math
+p(\delta_E)=\sqrt{1+\frac{2\delta_E}{\beta_0}+\delta_E^2},
+\qquad
+\frac{p_{\mathrm{new}}}{p_{\mathrm{old}}}
+=\frac{p(\delta_E+\Delta\delta_E)}{p(\delta_E)}.
+```
+
+The mechanical transverse momenta are multiplied by this exact ratio.
+Radiation code must not use ``(1+\delta_E)^2`` as a momentum factor or multiply
+transverse momenta by ``1+\Delta\delta_E``; both are mixed-variable,
+ultrarelativistic approximations inherited by some AT/JuTrack maps.
+
+Quantum diffusion is converted just as carefully. If a local mean loss is
+stored as ``\mathrm d\bar\delta_E=\mathrm dU/(P_0c)``, the Gaussian photon
+variance in the same coordinate contains
+
+```math
+\mathrm d\langle\delta_E^2\rangle
+=2\,\mathrm d\bar\delta_E\,\frac{E}{P_0c}\,
+ C_q\gamma^2\lvert\rho^{-1}\rvert ,
+\qquad C_q=\frac{55}{32\sqrt3}\frac{\hbar}{mc}.
+```
+
+The factor 2 is Sands' photon second moment,
+``N\langle u^2\rangle=\tfrac{55}{24\sqrt3}\,u_cP_\gamma`` with
+``u_c=\tfrac32\hbar c\gamma^3/\rho``; at ``\beta_0=1`` it is the
+``\tfrac{55}{24\sqrt3}r_e\bar\lambda_e\gamma^5\lvert\rho\rvert^{-3}`` per unit
+length of AT's diffusion matrix. The synchrotron-oscillation average halves it
+again, which is what leaves the familiar
+``\sigma_\delta^2=C_q\gamma^2I_3/(J_\epsilon I_2)``. The reference-orbit factor
+is ``E_0/(P_0c)=1/\beta_0``; omitting it is another ultrarelativistic
+approximation.
+
+Optics functions describe the conservative machine and never include
+radiation: `twiss`, `gettune`, `getchrom`, `one_turn_map`, `transfer_map`,
+`findm66`, `find_closed_orbit_4d`/`find_closed_orbit_6d`, `tpsa_map` and their
+JuTrack-style spellings evaluate the lattice with every `rad` flag cleared.
+Radiation damping makes the one-turn map non-symplectic and quantum excitation
+makes it random, and Twiss parameters, tunes and chromaticities are defined for
+neither. Only tracking (`track`, `track!`, `linepass`, `linepass!`) radiates.
+
 ### Beam covariance and emittance
 
 Macroparticle matrices follow the same canonical order as scalar tracking. A

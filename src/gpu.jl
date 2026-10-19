@@ -1087,17 +1087,18 @@ multi-threaded CPU tracking of a particle matrix, no GPU required.
 """
 cpu_batch_linepass!(coords::Matrix, lat::Lattice, beam::Beam = Beam(1.0e9),
                     nturns::Integer = 1; time::Real = 0, dt_turn::Real = 0,
-                    turn::Integer = 0) =
+                    turn::Integer = 0, radiation_seed::Integer = 0) =
     track!(coords, lat, beam; nturns=nturns, threaded=true,
-           time=time, dt_turn=dt_turn, turn=turn)
+           time=time, dt_turn=dt_turn, turn=turn, radiation_seed=radiation_seed)
 
 # Threaded core of `track!` (src/lattice.jl), next to the chunking helpers it
 # uses. Time-varying elements are resolved once per turn, outside the threaded
 # loop: resolving them per particle both froze turn-dependent parameters and
 # materialized each element once per particle.
-function _threaded_track!(coords::Matrix{T}, lat::Lattice, β_inv::T,
+function _threaded_track!(coords::Matrix{T}, lat::Lattice, beam::Beam, β_inv::T,
                           lost::AbstractVector, nturns::Integer,
-                          time::T, dt_turn::T, turn::Int) where T
+                          time::T, dt_turn::T, turn::Int,
+                          radiation_seed::Integer) where T
     n = size(coords, 1)
     nan6 = SVector{6,T}(T(NaN), T(NaN), T(NaN), T(NaN), T(NaN), T(NaN))
     t = time
@@ -1116,10 +1117,11 @@ function _threaded_track!(coords::Matrix{T}, lat::Lattice, β_inv::T,
         elements = _resolved_elements(lat, ctx)
         Threads.@threads for ci in eachindex(chunks)
             rng = chunks[ci]
-            for elem_now in elements
+            for (element_index, elem_now) in enumerate(elements)
                 rap, eap = _elem_apertures(elem_now)
-                _batch_track_element!(coords, lost, rng, elem_now, β_inv,
-                                      rap, eap, nan6)
+                _batch_track_element!(coords, lost, rng, elem_now, beam, β_inv,
+                                      rap, eap, nan6, radiation_seed, trn,
+                                      element_index)
             end
         end
         t += dt_turn
@@ -1147,13 +1149,15 @@ end
 # reproduces the previous "break out of the element loop and write NaN"
 # behaviour without re-testing it at every element.
 function _batch_track_element!(coords::Matrix{T}, lost::AbstractVector,
-                               rng::UnitRange{Int}, elem::E, β_inv::T,
-                               rap, eap, nan6::SVector{6,T}) where {T,E<:AbstractElement}
+                               rng::UnitRange{Int}, elem::E, beam::Beam, β_inv::T,
+                               rap, eap, nan6::SVector{6,T},
+                               radiation_seed::Integer, turn::Int,
+                               element_index::Int) where {T,E<:AbstractElement}
     @inbounds for i in rng
         !iszero(lost[i]) && continue
         r = SVector{6,T}(coords[i,1], coords[i,2], coords[i,3],
                          coords[i,4], coords[i,5], coords[i,6])
-        r = pass!(elem, r, β_inv)
+        r = _pass_tracking(elem, r, beam, radiation_seed, turn, element_index, i)
         if check_lost(r) || aperture_lost(r, rap, eap)
             lost[i] = true
             r = nan6

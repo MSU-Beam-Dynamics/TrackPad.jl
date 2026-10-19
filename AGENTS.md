@@ -72,6 +72,11 @@ not depend on which other packages are loaded.
   `num_int_steps=10` explicitly.
 - The AT-style dipole edge carries its longitudinal term
   (`SYMPLECTIC_BEND_EDGE`); the AT map is reachable with `Val(false)`.
+- Synchrotron radiation (`rad=1` damping, `rad=2` plus quantum excitation)
+  acts only in tracking. Every public optics entry point strips it with
+  `_without_radiation` first; a new optics function must do the same. Quantum
+  diffusion is `2·Cq` per unit of mean loss (Sands); `test/verify_radiation.jl`
+  pins it against AT's constant and a ring equilibrium.
 - Scalar CPU tracking is the behavioral reference.
 - `track`/`track!` are the tracking entry points (one particle or an `N x 6`
   matrix, `nturns` passes, `threaded=true`, or a packed `GPULattice`); they

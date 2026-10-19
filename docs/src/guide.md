@@ -234,7 +234,9 @@ propagates) the linear optics, and returns a single [`TwissResult`](@ref)
 holding the Twiss functions, the dispersion, the momentum compaction and the
 chromaticity — all from the same set of transfer maps, so they are guaranteed
 to describe the same machine. Rings and open lines differ only by whether you
-supply entrance optics.
+supply entrance optics. Optics are always those of the radiation-free machine:
+magnets' `rad` flags are ignored by every function in this section and act only
+in tracking.
 
 ### The ring in one call
 

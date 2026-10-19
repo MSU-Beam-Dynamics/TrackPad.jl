@@ -32,6 +32,32 @@ const DRIFT2 = -0.1756035959798286639
 const KICK1 = 1.351207191959657328
 const KICK2 = -1.702414383919314656
 
+# Reduced Compton wavelength times 55/(32*sqrt(3)), expressed as eV*m.
+# Dividing by a particle's rest-mass energy gives the usual quantum constant Cq.
+const QUANTUM_CONSTANT_EV_M = 55 / (32 * sqrt(3.0)) * 1.973269804593025e-7
+
+"""
+    RadiationContext
+
+Beam and reproducibility data needed by radiation-enabled element maps.  It is
+kept separate from element definitions: radiation depends on the tracked beam,
+not on a second, potentially inconsistent energy stored in every magnet.
+"""
+struct RadiationContext{T}
+    beti::T
+    beta0::T
+    gamma0::T
+    p0c::T
+    mass::T
+    charge::T
+    classical_radius::T
+    cq::T
+    seed::UInt64
+    turn::Int
+    element::Int
+    particle::Int
+end
+
 # =============================================================================
 # Global Settings
 # =============================================================================
@@ -126,6 +152,89 @@ end
 @inline function _momentum_jacobian(delta_e, beti)
     return (beti + delta_e) / _momentum_norm(delta_e, beti)
 end
+
+# Counter-based normal variates make quantum excitation independent of thread
+# scheduling.  Each physical slice gets one draw keyed by tracking coordinates.
+@inline function _splitmix64(x::UInt64)
+    z = x + 0x9e3779b97f4a7c15
+    z = xor(z, z >> 30) * 0xbf58476d1ce4e5b9
+    z = xor(z, z >> 27) * 0x94d049bb133111eb
+    return xor(z, z >> 31)
+end
+
+@inline _counter_bits(x::Integer) = reinterpret(UInt64, Int64(x))
+
+@inline function _radiation_normal(ctx::RadiationContext{T}, slice::Int) where T
+    key = xor(ctx.seed, _counter_bits(ctx.turn) * 0x9e3779b97f4a7c15,
+              _counter_bits(ctx.element) * 0xbf58476d1ce4e5b9,
+              _counter_bits(ctx.particle) * 0x94d049bb133111eb,
+              _counter_bits(slice) * 0xd2b74407b1ce6e93)
+    a = _splitmix64(key)
+    b = _splitmix64(a)
+    u1 = T((Float64(a >> 11) + 0.5) * 0x1.0p-53)
+    u2 = T((Float64(b >> 11) + 0.5) * 0x1.0p-53)
+    return sqrt(-T(2) * log(u1)) * cos(T(2pi) * u2)
+end
+
+@inline _radiation_mode(elem) = hasproperty(elem, :rad) ? getproperty(elem, :rad) : 0
+
+@inline function _check_radiation_mode(mode::Int)
+    mode in (0, 1, 2) || throw(ArgumentError(
+        "radiation mode must be 0 (off), 1 (damping), or 2 (damping plus quantum excitation)"))
+    return mode
+end
+
+"""
+Apply radiation in a magnetic field normalized to the reference rigidity.
+`bx` and `by` are `Bx/(B rho)` and `By/(B rho)` in 1/m, `irho` is the
+reference-frame curvature, and `ds` is a positive reference-path increment.
+"""
+@inline function _radiation_kick(r::SVector{6,S}, bx, by, irho, ds,
+                                 ctx::RadiationContext{T}, mode::Int,
+                                 slice::Int) where {S<:Real,T<:Real}
+    iszero(ds) && return r
+    pnorm = _momentum_norm(r[6], ctx.beti)
+    pz2 = pnorm^2 - r[2]^2 - r[4]^2
+    pz2 <= zero(pz2) && return _lost_coords(r, T)
+    pz = sqrt(pz2)
+    xp = r[2] / pz
+    yp = r[4] / pz
+    oh = one(T) + irho * r[1]
+    # `(xp, yp, 1)` is parallel to the physical momentum.  The curvilinear
+    # scale factor belongs in dl/ds, not in that direction vector.
+    dir2 = one(T) + xp^2 + yp^2
+    bperp2 = (by^2 + bx^2 + (bx * yp - by * xp)^2) / dir2
+    bperp2 <= zero(bperp2) && return r
+
+    energy_norm = ctx.beti + r[6]             # E/(P0*c)
+    gamma = ctx.p0c * energy_norm / ctx.mass
+    beta = pnorm / energy_norm
+    path = abs(ds * oh) * sqrt(dir2)
+    loss = T(2 / 3) * ctx.classical_radius * ctx.beta0 * ctx.gamma0 *
+           beta * gamma^2 * bperp2 * path
+
+    delta_new = r[6] - loss
+    if mode == 2
+        # Gaussian photon diffusion.  Sands' N<u^2> = (55/(24*sqrt(3))) u_c P_gamma
+        # with u_c = (3/2) hbar*c*gamma^3/rho is d<dE^2> = 2 Cq m c^2 gamma^3 dU/rho,
+        # i.e. d<delta^2> = 2 (dU/E) Cq*gamma^2/|rho|.  Averaging over synchrotron
+        # oscillations halves it again, giving the standard equilibrium
+        # Cq*gamma^2*I3/(J_epsilon*I2); without the 2 that spread is 1/sqrt(2) small.
+        kappa = sqrt(bperp2) / pnorm
+        # Photon-energy variance is naturally relative to E.  Convert its
+        # second moment to TrackPad's stored ΔE/(P0*c) coordinate exactly.
+        variance = 2 * loss * energy_norm * ctx.cq * gamma^2 * kappa
+        delta_new += sqrt(max(zero(T), variance)) * _radiation_normal(ctx, slice)
+    end
+
+    pnew2 = one(T) + 2 * delta_new * ctx.beti + delta_new^2
+    pnew2 <= zero(pnew2) && return _lost_coords(r, T)
+    scale = sqrt(pnew2) / pnorm
+    return SVector(r[1], r[2] * scale, r[3], r[4] * scale, r[5], delta_new)
+end
+
+@inline _radiation_kick(r::SVector{6}, bx, by, irho, ds,
+                        ::RadiationContext, mode::Int, slice::Int) = r
 
 """
 Return the reference momentum-energy product `P0*c = β0 E0` from the total
@@ -676,6 +785,50 @@ Drift-Kick-Drift-Kick-Drift-Kick-Drift pattern per step.
     return r
 end
 
+@inline function _normalized_magnetic_field(r::SVector{6,S},
+                                            polynom_a::SVector{N,T},
+                                            polynom_b::SVector{N,T},
+                                            irho::T,
+                                            max_order::Int) where {T<:Real,N,S}
+    dpx, dpy = _curved_multipole_field(r[1], r[3], polynom_a, polynom_b,
+                                       irho, max_order)
+    oh = one(T) + irho * r[1]
+    # dpx/ds = -(1+h*x) * (By/(B*rho) - h), dpy/ds = (1+h*x) * Bx/(B*rho).
+    return dpy / oh, irho - dpx / oh
+end
+
+@inline function symplectic4_radiation_pass(r::SVector{6,S},
+                                            L::T,
+                                            polynom_a::SVector{N,T},
+                                            polynom_b::SVector{N,T},
+                                            irho::T,
+                                            max_order::Int,
+                                            num_steps::Int,
+                                            ctx::RadiationContext{T},
+                                            mode::Int) where {T<:Real,N,S<:Real}
+    num_steps > 0 || throw(ArgumentError("radiating thick magnets require num_int_steps > 0"))
+    SL = L / num_steps
+    half = SL / 2
+    @inbounds for slice in 1:num_steps
+        if iszero(irho)
+            r = symplectic4_pass(r, half, polynom_a, polynom_b, max_order, 1, ctx.beti)
+        else
+            r = symplectic4_bend_pass(r, half, polynom_a, polynom_b, irho,
+                                      max_order, 1, ctx.beti)
+        end
+        bx, by = _normalized_magnetic_field(r, polynom_a, polynom_b, irho, max_order)
+        r = _radiation_kick(r, bx, by, irho, SL, ctx, mode, slice)
+        check_lost(r) && return r
+        if iszero(irho)
+            r = symplectic4_pass(r, half, polynom_a, polynom_b, max_order, 1, ctx.beti)
+        else
+            r = symplectic4_bend_pass(r, half, polynom_a, polynom_b, irho,
+                                      max_order, 1, ctx.beti)
+        end
+    end
+    return r
+end
+
 """
     multipole_fringe(r, polynom_a, polynom_b, max_order, edge, skip_b0, beti) -> SVector{6}
 
@@ -766,7 +919,11 @@ end
 
 Track particle through a Quadrupole using 4th-order symplectic integrator.
 """
-function pass!(elem::Quadrupole{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
+pass!(elem::Quadrupole{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S} =
+    _pass_quadrupole(elem, r, beti, nothing)
+
+function _pass_quadrupole(elem::Quadrupole{T,N}, r::SVector{6,S}, beti::T,
+                          radctx) where {T,N,S}
     # Apply entrance misalignment
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
@@ -803,8 +960,17 @@ function pass!(elem::Quadrupole{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,
     end
 
     # Symplectic integration
-    r = symplectic4_pass(r, elem.L, kick_correction_a, kick_correction_b,
-                         elem.max_order, elem.num_int_steps, beti)
+    mode = _check_radiation_mode(elem.rad)
+    if mode == 0
+        r = symplectic4_pass(r, elem.L, kick_correction_a, kick_correction_b,
+                             elem.max_order, elem.num_int_steps, beti)
+    else
+        radctx === nothing && throw(ArgumentError(
+            "radiation-enabled Quadrupole tracking requires linepass/track with a Beam"))
+        r = symplectic4_radiation_pass(r, elem.L, kick_correction_a, kick_correction_b,
+                                       zero(T), elem.max_order, elem.num_int_steps,
+                                       radctx, mode)
+    end
 
     if !iszero(elem.fringe_exit)
         r = multipole_fringe(r, kick_correction_a, kick_correction_b,
@@ -829,7 +995,11 @@ end
 
 Track particle through a Sextupole using 4th-order symplectic integrator.
 """
-function pass!(elem::Sextupole{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
+pass!(elem::Sextupole{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S} =
+    _pass_sextupole(elem, r, beti, nothing)
+
+function _pass_sextupole(elem::Sextupole{T,N}, r::SVector{6,S}, beti::T,
+                         radctx) where {T,N,S}
     # Apply entrance misalignment
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
@@ -853,8 +1023,16 @@ function pass!(elem::Sextupole{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N
     end
 
     # Symplectic integration
-    r = symplectic4_pass(r, elem.L, polynom_a, polynom_b,
-                         elem.max_order, elem.num_int_steps, beti)
+    mode = _check_radiation_mode(elem.rad)
+    if mode == 0
+        r = symplectic4_pass(r, elem.L, polynom_a, polynom_b,
+                             elem.max_order, elem.num_int_steps, beti)
+    else
+        radctx === nothing && throw(ArgumentError(
+            "radiation-enabled Sextupole tracking requires linepass/track with a Beam"))
+        r = symplectic4_radiation_pass(r, elem.L, polynom_a, polynom_b, zero(T),
+                                       elem.max_order, elem.num_int_steps, radctx, mode)
+    end
 
     if !iszero(elem.fringe_exit)
         r = multipole_fringe(r, polynom_a, polynom_b, elem.max_order, -one(T), 1, beti)
@@ -878,7 +1056,11 @@ end
 
 Track particle through an Octupole using 4th-order symplectic integrator.
 """
-function pass!(elem::Octupole{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
+pass!(elem::Octupole{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S} =
+    _pass_octupole(elem, r, beti, nothing)
+
+function _pass_octupole(elem::Octupole{T,N}, r::SVector{6,S}, beti::T,
+                        radctx) where {T,N,S}
     # Apply entrance misalignment
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
@@ -902,8 +1084,16 @@ function pass!(elem::Octupole{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,
     end
 
     # Symplectic integration
-    r = symplectic4_pass(r, elem.L, polynom_a, polynom_b,
-                         elem.max_order, elem.num_int_steps, beti)
+    mode = _check_radiation_mode(elem.rad)
+    if mode == 0
+        r = symplectic4_pass(r, elem.L, polynom_a, polynom_b,
+                             elem.max_order, elem.num_int_steps, beti)
+    else
+        radctx === nothing && throw(ArgumentError(
+            "radiation-enabled Octupole tracking requires linepass/track with a Beam"))
+        r = symplectic4_radiation_pass(r, elem.L, polynom_a, polynom_b, zero(T),
+                                       elem.max_order, elem.num_int_steps, radctx, mode)
+    end
 
     if !iszero(elem.fringe_exit)
         r = multipole_fringe(r, polynom_a, polynom_b, elem.max_order, -one(T), 1, beti)
@@ -1047,6 +1237,8 @@ end
 Track particle through a thin multipole element.
 """
 function pass!(elem::ThinMultipole{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
+    _check_radiation_mode(elem.rad) == 0 || throw(ArgumentError(
+        "ThinMultipole has no physical body length for radiation; use a thick multipole"))
     # Apply entrance misalignment
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
@@ -1089,7 +1281,11 @@ The tracking sequence is:
 4. Apply exit edge focusing
 5. Apply exit misalignment (r2, t2)
 """
-function pass!(elem::SBend{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
+pass!(elem::SBend{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S} =
+    _pass_sbend(elem, r, beti, nothing)
+
+function _pass_sbend(elem::SBend{T,N}, r::SVector{6,S}, beti::T,
+                     radctx) where {T,N,S}
     # Apply entrance misalignment
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
@@ -1127,8 +1323,16 @@ function pass!(elem::SBend{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     end
 
     # Symplectic integration through body
-    r = symplectic4_bend_pass(r, elem.L, polynom_a, polynom_b, irho,
-                               elem.max_order, elem.num_int_steps, beti)
+    mode = _check_radiation_mode(elem.rad)
+    if mode == 0
+        r = symplectic4_bend_pass(r, elem.L, polynom_a, polynom_b, irho,
+                                  elem.max_order, elem.num_int_steps, beti)
+    else
+        radctx === nothing && throw(ArgumentError(
+            "radiation-enabled SBend tracking requires linepass/track with a Beam"))
+        r = symplectic4_radiation_pass(r, elem.L, polynom_a, polynom_b, irho,
+                                       elem.max_order, elem.num_int_steps, radctx, mode)
+    end
 
     if !iszero(elem.fringe_quad_exit)
         r = multipole_fringe(r, polynom_a, polynom_b, elem.max_order, -one(T), 1, beti)
@@ -1370,12 +1574,33 @@ end
 @inline _exact_kernel(f::F, r::SVector{6,<:Real}, args...) where F = f(r, args...)
 @noinline _exact_kernel(f::F, r::SVector{6}, args...) where F = f(r, args...)
 
+@inline function _exact_bend_integrator_step(r::SVector{6,S}, ds::T, irho::T,
+                                             polynom_a::SVector{N,T},
+                                             polynom_b::SVector{N,T},
+                                             max_order::Int, beti::T) where {S,T<:Real,N}
+    L1 = ds * T(DRIFT1)
+    L2 = ds * T(DRIFT2)
+    K1 = ds * T(KICK1)
+    K2 = ds * T(KICK2)
+    r = _exact_kernel(exact_bend_body, r, irho, L1, beti)
+    r = _exact_kernel(bndmultipolekick, r, polynom_a, polynom_b, K1, irho, max_order)
+    r = _exact_kernel(exact_bend_body, r, irho, L2, beti)
+    r = _exact_kernel(bndmultipolekick, r, polynom_a, polynom_b, K2, irho, max_order)
+    r = _exact_kernel(exact_bend_body, r, irho, L2, beti)
+    r = _exact_kernel(bndmultipolekick, r, polynom_a, polynom_b, K1, irho, max_order)
+    return _exact_kernel(exact_bend_body, r, irho, L1, beti)
+end
+
 """
     pass!(elem::ExactSBend, r, beti)
 
 Track through Exact Sector Bend.
 """
-function pass!(elem::ExactSBend{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
+pass!(elem::ExactSBend{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S} =
+    _pass_exact_sbend(elem, r, beti, nothing)
+
+function _pass_exact_sbend(elem::ExactSBend{T,N}, r::SVector{6,S}, beti::T,
+                           radctx) where {T,N,S}
     # Entrance Misalignment
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
@@ -1407,23 +1632,37 @@ function pass!(elem::ExactSBend{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,
     r = _exact_kernel(bend_edge, r, irho, -elem.e1, beti)
 
     # Integrator (Body): drift-kick-drift using exact_bend_body.
-    if elem.num_int_steps == 0
+    mode = _check_radiation_mode(elem.rad)
+    if mode == 0 && elem.num_int_steps == 0
         r = _exact_kernel(exact_bend_body, r, irho, elem.L, beti)
-    else
+    elseif mode == 0
         SL = elem.L / elem.num_int_steps
-        L1 = SL * T(DRIFT1)
-        L2 = SL * T(DRIFT2)
-        K1 = SL * T(KICK1)
-        K2 = SL * T(KICK2)
-
         for _ in 1:elem.num_int_steps
-            r = _exact_kernel(exact_bend_body, r, irho, L1, beti)
-            r = _exact_kernel(bndmultipolekick, r, polynom_a, polynom_b, K1, irho, elem.max_order)
-            r = _exact_kernel(exact_bend_body, r, irho, L2, beti)
-            r = _exact_kernel(bndmultipolekick, r, polynom_a, polynom_b, K2, irho, elem.max_order)
-            r = _exact_kernel(exact_bend_body, r, irho, L2, beti)
-            r = _exact_kernel(bndmultipolekick, r, polynom_a, polynom_b, K1, irho, elem.max_order)
-            r = _exact_kernel(exact_bend_body, r, irho, L1, beti)
+            r = _exact_bend_integrator_step(r, SL, irho, polynom_a, polynom_b,
+                                            elem.max_order, beti)
+        end
+    else
+        radctx === nothing && throw(ArgumentError(
+            "radiation-enabled ExactSBend tracking requires linepass/track with a Beam"))
+        nsteps = max(1, elem.num_int_steps)
+        SL = elem.L / nsteps
+        for slice in 1:nsteps
+            if elem.num_int_steps == 0
+                r = _exact_kernel(exact_bend_body, r, irho, SL / 2, beti)
+            else
+                r = _exact_bend_integrator_step(r, SL / 2, irho, polynom_a,
+                                                polynom_b, elem.max_order, beti)
+            end
+            bx, by = _normalized_magnetic_field(r, polynom_a, polynom_b,
+                                                irho, elem.max_order)
+            r = _radiation_kick(r, bx, by, irho, SL, radctx, mode, slice)
+            check_lost(r) && return r
+            if elem.num_int_steps == 0
+                r = _exact_kernel(exact_bend_body, r, irho, SL / 2, beti)
+            else
+                r = _exact_bend_integrator_step(r, SL / 2, irho, polynom_a,
+                                                polynom_b, elem.max_order, beti)
+            end
         end
     end
 
@@ -1469,7 +1708,11 @@ end
     return SVector{4, T}(elem.k0, elem.k1, elem.k2 / 2, elem.k3 / 6)
 end
 
-function pass!(elem::QuadrupoleSC{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
+pass!(elem::QuadrupoleSC{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S} =
+    _pass_quadrupole_sc(elem, r, beti, nothing)
+
+function _pass_quadrupole_sc(elem::QuadrupoleSC{T,N}, r::SVector{6,S}, beti::T,
+                             radctx) where {T,N,S}
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
         r = elem.r1 * r
@@ -1481,7 +1724,11 @@ function pass!(elem::QuadrupoleSC{T,N}, r::SVector{6,S}, beti::T=one(T)) where {
         polynom_b = SVector{4, T}(polynom_b[1] - sin(elem.kick_angle[1]) / elem.L, polynom_b[2], polynom_b[3], polynom_b[4])
         polynom_a = SVector{4, T}(polynom_a[1] + sin(elem.kick_angle[2]) / elem.L, polynom_a[2], polynom_a[3], polynom_a[4])
     end
-    r = symplectic4_pass(r, elem.L, polynom_a, polynom_b, clamp(elem.max_order, 0, 3), elem.num_int_steps, beti)
+    mode = _check_radiation_mode(elem.rad)
+    order = clamp(elem.max_order, 0, 3)
+    r = mode == 0 ? symplectic4_pass(r, elem.L, polynom_a, polynom_b, order, elem.num_int_steps, beti) :
+        (radctx === nothing ? throw(ArgumentError("radiation-enabled QuadrupoleSC requires linepass/track with a Beam")) :
+         symplectic4_radiation_pass(r, elem.L, polynom_a, polynom_b, zero(T), order, elem.num_int_steps, radctx, mode))
 
     if !iszero(elem.r2)
         r = elem.r2 * r
@@ -1489,31 +1736,51 @@ function pass!(elem::QuadrupoleSC{T,N}, r::SVector{6,S}, beti::T=one(T)) where {
     return apply_misalignment(r, elem.t2)
 end
 
-function pass!(elem::SextupoleSC{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
+pass!(elem::SextupoleSC{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S} =
+    _pass_sextupole_sc(elem, r, beti, nothing)
+
+function _pass_sextupole_sc(elem::SextupoleSC{T,N}, r::SVector{6,S}, beti::T,
+                            radctx) where {T,N,S}
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
         r = elem.r1 * r
     end
-    r = symplectic4_pass(r, elem.L, elem.polynom_a, _sc_polynom_b(elem), clamp(elem.max_order, 0, 3), elem.num_int_steps, beti)
+    pb = _sc_polynom_b(elem); order = clamp(elem.max_order, 0, 3)
+    mode = _check_radiation_mode(elem.rad)
+    r = mode == 0 ? symplectic4_pass(r, elem.L, elem.polynom_a, pb, order, elem.num_int_steps, beti) :
+        (radctx === nothing ? throw(ArgumentError("radiation-enabled SextupoleSC requires linepass/track with a Beam")) :
+         symplectic4_radiation_pass(r, elem.L, elem.polynom_a, pb, zero(T), order, elem.num_int_steps, radctx, mode))
     if !iszero(elem.r2)
         r = elem.r2 * r
     end
     return apply_misalignment(r, elem.t2)
 end
 
-function pass!(elem::OctupoleSC{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
+pass!(elem::OctupoleSC{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S} =
+    _pass_octupole_sc(elem, r, beti, nothing)
+
+function _pass_octupole_sc(elem::OctupoleSC{T,N}, r::SVector{6,S}, beti::T,
+                           radctx) where {T,N,S}
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
         r = elem.r1 * r
     end
-    r = symplectic4_pass(r, elem.L, elem.polynom_a, _sc_polynom_b(elem), clamp(elem.max_order, 0, 3), elem.num_int_steps, beti)
+    pb = _sc_polynom_b(elem); order = clamp(elem.max_order, 0, 3)
+    mode = _check_radiation_mode(elem.rad)
+    r = mode == 0 ? symplectic4_pass(r, elem.L, elem.polynom_a, pb, order, elem.num_int_steps, beti) :
+        (radctx === nothing ? throw(ArgumentError("radiation-enabled OctupoleSC requires linepass/track with a Beam")) :
+         symplectic4_radiation_pass(r, elem.L, elem.polynom_a, pb, zero(T), order, elem.num_int_steps, radctx, mode))
     if !iszero(elem.r2)
         r = elem.r2 * r
     end
     return apply_misalignment(r, elem.t2)
 end
 
-function pass!(elem::SBendSC{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
+pass!(elem::SBendSC{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S} =
+    _pass_sbend_sc(elem, r, beti, nothing)
+
+function _pass_sbend_sc(elem::SBendSC{T,N}, r::SVector{6,S}, beti::T,
+                        radctx) where {T,N,S}
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
         r = elem.r1 * r
@@ -1533,7 +1800,11 @@ function pass!(elem::SBendSC{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S
     if elem.fringe_bend_entrance != 0
         r = edge_fringe_entrance(r, irho, elem.e1, elem.fint1, elem.gap, elem.fringe_bend_entrance)
     end
-    r = symplectic4_bend_pass(r, elem.L, polynom_a, polynom_b, irho, clamp(elem.max_order, 0, 3), elem.num_int_steps, beti)
+    order = clamp(elem.max_order, 0, 3)
+    mode = _check_radiation_mode(elem.rad)
+    r = mode == 0 ? symplectic4_bend_pass(r, elem.L, polynom_a, polynom_b, irho, order, elem.num_int_steps, beti) :
+        (radctx === nothing ? throw(ArgumentError("radiation-enabled SBendSC requires linepass/track with a Beam")) :
+         symplectic4_radiation_pass(r, elem.L, polynom_a, polynom_b, irho, order, elem.num_int_steps, radctx, mode))
     if elem.fringe_bend_exit != 0
         r = edge_fringe_exit(r, irho, elem.e2, elem.fint2, elem.gap, elem.fringe_bend_exit)
     end
@@ -1793,9 +2064,12 @@ end
 # Wiggler
 # =============================================================================
 
-@inline function _sinc_taylor(x::T) where T
+# `x` may be a TPSA coordinate: build the unit from the instance, since CTPS has
+# no type-level `one` (see the Marker `pass!` note).
+@inline function _sinc_taylor(x)
     x2 = x * x
-    return one(T) - x2 / 6 * (one(T) - x2 / 20 * (one(T) - x2 / 42 * (one(T) - x2 / 72)))
+    u = one(x)
+    return u - x2 / 6 * (u - x2 / 20 * (u - x2 / 42 * (u - x2 / 72)))
 end
 
 @inline function _wig_ax_axpy(elem::Wiggler{T,N,V}, r::SVector{6,S}, Zw::T, Aw::T, Po::T) where {T,N,V,S}
@@ -1902,6 +2176,13 @@ end
     return ay, aypx
 end
 
+# As `_exact_kernel` does for the exact bend: the vector-potential sums are
+# inlined for `Real` coordinates but called for series coordinates, where a
+# 4th-order step would otherwise inline 18 copies of them into one function
+# that took two minutes to compile for CTPS.
+@inline _wig_kernel(f::F, elem, r::SVector{6,<:Real}, args...) where F = f(elem, r, args...)
+@noinline _wig_kernel(f::F, elem, r::SVector{6}, args...) where F = f(elem, r, args...)
+
 @inline function _wig_map_2nd(elem::Wiggler{T,N,V}, r::SVector{6,S}, dl::T,
                               Zw::T, Aw::T, Po::T, beti::T) where {T,N,V,S}
     delta = r[6]
@@ -1919,33 +2200,33 @@ end
     py = r[4]
     z = r[5]
 
-    ay, aypx = _wig_ay_aypx(elem, SVector(x, px, y, py, z, delta), Zw, Aw, Po)
+    ay, aypx = _wig_kernel(_wig_ay_aypx, elem, SVector(x, px, y, py, z, delta), Zw, Aw, Po)
     px -= aypx
     py -= ay
     y += dl2d * py
     z -= momentum_jacobian * (dl2d / 2) * py^2 * inv_momentum
 
-    ay, aypx = _wig_ay_aypx(elem, SVector(x, px, y, py, z, delta), Zw, Aw, Po)
+    ay, aypx = _wig_kernel(_wig_ay_aypx, elem, SVector(x, px, y, py, z, delta), Zw, Aw, Po)
     px += aypx
     py += ay
 
-    ax, axpy = _wig_ax_axpy(elem, SVector(x, px, y, py, z, delta), Zw, Aw, Po)
+    ax, axpy = _wig_kernel(_wig_ax_axpy, elem, SVector(x, px, y, py, z, delta), Zw, Aw, Po)
     px -= ax
     py -= axpy
     x += dld * px
     z -= momentum_jacobian * (dld / 2) * px^2 * inv_momentum
 
-    ax, axpy = _wig_ax_axpy(elem, SVector(x, px, y, py, z, delta), Zw, Aw, Po)
+    ax, axpy = _wig_kernel(_wig_ax_axpy, elem, SVector(x, px, y, py, z, delta), Zw, Aw, Po)
     px += ax
     py += axpy
 
-    ay, aypx = _wig_ay_aypx(elem, SVector(x, px, y, py, z, delta), Zw, Aw, Po)
+    ay, aypx = _wig_kernel(_wig_ay_aypx, elem, SVector(x, px, y, py, z, delta), Zw, Aw, Po)
     px -= aypx
     py -= ay
     y += dl2d * py
     z -= momentum_jacobian * (dl2d / 2) * py^2 * inv_momentum
 
-    ay, aypx = _wig_ay_aypx(elem, SVector(x, px, y, py, z, delta), Zw, Aw, Po)
+    ay, aypx = _wig_kernel(_wig_ay_aypx, elem, SVector(x, px, y, py, z, delta), Zw, Aw, Po)
     px += aypx
     py += ay
     Zw += dl2
@@ -1953,24 +2234,42 @@ end
     return SVector(x, px, y, py, z, delta), Zw
 end
 
-@inline function _wig_pass_4th(elem::Wiggler{T,N,V}, r::SVector{6,S}, beti::T) where {T,N,V,S}
-    PN = elem.Nsteps
-    Nw = round(Int, elem.L / elem.lw)
-    Nstep = PN * max(1, Nw)
-    dl = elem.lw / T(PN)
+@inline function _wig_step_4th(elem::Wiggler{T,N,V}, r::SVector{6,S}, Zw::T,
+                               dl::T, Aw::T, Po::T, beti::T) where {T,N,V,S}
     dl1 = dl * T(1.3512071919596573)
     dl0 = dl * T(-1.7024143839193146)
+    r, Zw = _wig_kernel(_wig_map_2nd, elem, r, dl1, Zw, Aw, Po, beti)
+    r, Zw = _wig_kernel(_wig_map_2nd, elem, r, dl0, Zw, Aw, Po, beti)
+    return _wig_kernel(_wig_map_2nd, elem, r, dl1, Zw, Aw, Po, beti)
+end
 
-    Po = sqrt((elem.energy / elem.mass)^2 - one(T))
-    Aw = T(1e-9) * T(C_LIGHT) / (elem.mass * T(1e-9)) / T(2pi) * elem.lw * elem.Bmax * abs(elem.charge)
+@inline function _wig_period_steps(elem::Wiggler{T}) where T
+    iszero(elem.L) && return 0
+    Nw = round(Int, elem.L / elem.lw)
+    isapprox(elem.L, T(Nw) * elem.lw; rtol=zero(T), atol=T(32) * eps(T) * max(elem.L, elem.lw)) ||
+        throw(ArgumentError("Wiggler length L must be an integer multiple of lw"))
+    return elem.Nsteps * Nw
+end
+
+@inline function _wig_pass_4th_core(elem::Wiggler{T,N,V}, r::SVector{6,S}, beti::T,
+                                    Po::T, Aw::T) where {T,N,V,S}
+    PN = elem.Nsteps
+    Nstep = _wig_period_steps(elem)
+    dl = elem.lw / T(PN)
     Zw = zero(T)
 
     @inbounds for _ in 1:Nstep
-        r, Zw = _wig_map_2nd(elem, r, dl1, Zw, Aw, Po, beti)
-        r, Zw = _wig_map_2nd(elem, r, dl0, Zw, Aw, Po, beti)
-        r, Zw = _wig_map_2nd(elem, r, dl1, Zw, Aw, Po, beti)
+        r, Zw = _wig_step_4th(elem, r, Zw, dl, Aw, Po, beti)
     end
     return r
+end
+
+
+@inline function _wig_pass_4th(elem::Wiggler{T,N,V}, r::SVector{6,S}, beti::T) where {T,N,V,S}
+    gamma = elem.energy / elem.mass
+    Po = sqrt(gamma^2 - one(T))
+    Aw = T(C_LIGHT) * elem.lw * elem.Bmax * abs(elem.charge) / (T(2pi) * elem.mass)
+    return _wig_pass_4th_core(elem, r, beti, Po, Aw)
 end
 
 @inline function _wig_B(elem::Wiggler{T,N,V}, r::SVector{6,S}, Zw::T) where {T,N,V,S}
@@ -2031,65 +2330,54 @@ end
     return Bxv, Byv, Bzv
 end
 
-@inline function _wig_radiation_kicks(r::SVector{6,S}, Bxv, Byv, Po::T, srCoef::T, dl::T,
-                                      mass::T) where {T,S}
-    B2 = Bxv^2 + Byv^2
-    if iszero(B2)
-        return r
-    end
-    H = Po * mass / T(C_LIGHT)
-    irho2 = B2 / (H * H)
-    dFactor = (one(T) + r[6])^2
-    dDelta = -srCoef * dFactor * irho2 * dl
-    scale = one(T) + dDelta
-    return SVector(r[1], r[2] * scale, r[3], r[4] * scale, r[5], r[6] + dDelta)
-end
-
-@inline function _wig_pass_4th_rad(elem::Wiggler{T,N,V}, r::SVector{6,S}, beti::T) where {T,N,V,S}
+@inline function _wig_pass_4th_rad(elem::Wiggler{T,N,V}, r::SVector{6,S},
+                                   ctx::RadiationContext{T}, mode::Int) where {T,N,V,S}
     PN = elem.Nsteps
-    Nw = round(Int, elem.L / elem.lw)
-    Nstep = PN * max(1, Nw)
+    Nstep = _wig_period_steps(elem)
     SL = elem.lw / T(PN)
-    dl1 = SL * T(1.3512071919596573)
-    dl0 = SL * T(-1.7024143839193146)
-
-    gamma = elem.energy / elem.mass
-    Po = sqrt(gamma^2 - one(T))
-    Aw = T(1e-9) * T(C_LIGHT) / (elem.mass * T(1e-9)) / T(2pi) * elem.lw * elem.Bmax * abs(elem.charge)
-    srCoef = T(2.0 / 3.0) * T(classical_radius(elem.mass, elem.charge)) * gamma^3
+    Po = ctx.p0c / ctx.mass
+    Aw = T(C_LIGHT) * elem.lw * elem.Bmax * abs(ctx.charge) / (T(2pi) * ctx.mass)
+    field_scale = abs(ctx.charge) * T(C_LIGHT) / ctx.p0c
     Zw = zero(T)
 
-    ax, _ = _wig_ax_axpy(elem, r, Zw, Aw, Po)
-    ay, _ = _wig_ay_aypx(elem, r, Zw, Aw, Po)
-    r = SVector(r[1], r[2] - ax, r[3], r[4] - ay, r[5], r[6])
-    Bxv, Byv, _ = _wig_B(elem, r, Zw)
-    r = _wig_radiation_kicks(r, Bxv, Byv, Po, srCoef, SL, elem.mass)
-    r = SVector(r[1], r[2] + ax, r[3], r[4] + ay, r[5], r[6])
-
-    @inbounds for _ in 1:Nstep
-        r, Zw = _wig_map_2nd(elem, r, dl1, Zw, Aw, Po, beti)
-        r, Zw = _wig_map_2nd(elem, r, dl0, Zw, Aw, Po, beti)
-        r, Zw = _wig_map_2nd(elem, r, dl1, Zw, Aw, Po, beti)
+    @inbounds for slice in 1:Nstep
+        r, Zw = _wig_step_4th(elem, r, Zw, SL / 2, Aw, Po, ctx.beti)
 
         ax, _ = _wig_ax_axpy(elem, r, Zw, Aw, Po)
         ay, _ = _wig_ay_aypx(elem, r, Zw, Aw, Po)
         r = SVector(r[1], r[2] - ax, r[3], r[4] - ay, r[5], r[6])
         Bxv, Byv, _ = _wig_B(elem, r, Zw)
-        r = _wig_radiation_kicks(r, Bxv, Byv, Po, srCoef, SL, elem.mass)
+        r = _radiation_kick(r, field_scale * Bxv, field_scale * Byv, zero(T),
+                            SL, ctx, mode, slice)
         r = SVector(r[1], r[2] + ax, r[3], r[4] + ay, r[5], r[6])
+        check_lost(r) && return r
+        r, Zw = _wig_step_4th(elem, r, Zw, SL / 2, Aw, Po, ctx.beti)
     end
 
     return r
 end
 
-function pass!(elem::Wiggler{T,N,V}, r::SVector{6,S}, beti::T=one(T)) where {T,N,V,S}
+pass!(elem::Wiggler{T,N,V}, r::SVector{6,S}, beti::T=one(T)) where {T,N,V,S} =
+    _pass_wiggler(elem, r, beti, nothing)
+
+function _pass_wiggler(elem::Wiggler{T,N,V}, r::SVector{6,S}, beti::T,
+                       radctx) where {T,N,V,S}
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
         r = elem.r1 * r
     end
 
-    if elem.rad == 1
-        r = _wig_pass_4th_rad(elem, r, beti)
+    mode = _check_radiation_mode(elem.rad)
+    if radctx !== nothing
+        Po = radctx.p0c / radctx.mass
+        Aw = T(C_LIGHT) * elem.lw * elem.Bmax * abs(radctx.charge) / (T(2pi) * radctx.mass)
+        if mode == 0
+            r = _wig_pass_4th_core(elem, r, beti, Po, Aw)
+        else
+            r = _wig_pass_4th_rad(elem, r, radctx, mode)
+        end
+    elseif mode != 0
+        throw(ArgumentError("radiation-enabled Wiggler tracking requires linepass/track with a Beam"))
     else
         r = _wig_pass_4th(elem, r, beti)
     end

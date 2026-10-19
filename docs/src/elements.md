@@ -67,7 +67,7 @@ Quadrupole
 | `k1` | normalised gradient [m⁻²]; positive focusses horizontally |
 | `num_int_steps` | number of symplectic integration slices (see below) |
 | `max_order` | highest multipole order used from `polynom_a/b` |
-| `rad` | compatibility flag; radiation support is element-specific |
+| `rad` | `0`: off, `1`: classical damping, `2`: damping plus quantum excitation |
 | `fringe_entrance`, `fringe_exit` | `1` to enable soft-edge fringe fields |
 | `polynom_a` / `polynom_b` | lower-level skew / normal polynomial coefficients from dipole through octupole |
 
@@ -111,6 +111,46 @@ studied. Every step count is symplectic, so the residual is a bounded
 map distortion rather than a growth. Importers (`read_madx`, `read_pals`) leave
 `num_int_steps` at `nothing` by default, which keeps these per-type values; pass
 an explicit number to force one count on every thick magnet.
+
+## Radiation Tracking
+
+`Quadrupole`, `Sextupole`, `Octupole`, `SBend`, `ExactSBend`, `Wiggler`, and
+their SC magnet counterparts support synchrotron radiation in high-level
+tracking:
+
+```julia
+bend = SBend(1.2, 0.08; rad=1)  # deterministic classical loss and damping
+bend = SBend(1.2, 0.08; rad=2)  # also Gaussian quantum excitation
+track!(coordinates, Lattice(AbstractElement[bend]), beam; radiation_seed=1234)
+```
+
+Radiation is evaluated at the midpoint of each physical integration slice from
+the local field perpendicular to the trajectory. The kick updates the stored
+energy coordinate ``\delta_E`` and rescales the mechanical transverse momenta
+by the exact new-to-old ``P/P_0`` ratio. Quantum samples are keyed by seed,
+turn, element, particle, and slice, so serial and threaded tracking agree
+exactly. Changing `radiation_seed` gives another realization.
+
+The excitation model is the Gaussian diffusion approximation to photon
+emission. It reproduces Sands' local diffusion, which at ``\beta_0=1`` is
+``\mathrm d\langle\delta^2\rangle/\mathrm ds=\tfrac{55}{24\sqrt3}\,r_e\bar\lambda_e\gamma^5\lvert\rho\rvert^{-3}``
+(AT's diffusion matrix), and with it the equilibrium energy spread
+``C_q\gamma^2 I_3/(J_\epsilon I_2)`` and emittance ``C_q\gamma^2 I_5/(J_x I_2)``.
+Photon opening-angle excitation and discrete hard-photon tails are not
+included. A ring needs an RF cavity to restore the mean radiated energy and
+reach a stationary longitudinal distribution.
+
+Optics never include radiation. [`twiss`](@ref), [`gettune`](@ref),
+[`getchrom`](@ref), [`one_turn_map`](@ref), [`transfer_map`](@ref),
+[`findm66`](@ref), the closed-orbit finders and [`tpsa_map`](@ref) evaluate the
+lattice with every `rad` flag cleared, so a lattice prepared for radiation
+tracking gives the same optics as its radiation-free twin. A time-dependent
+`rad` (`timed(elem; rad=...)`) cannot be cleared that way and is rejected by
+the optics functions.
+
+Direct `pass!` has no `Beam` argument and therefore rejects `rad != 0`; use
+`linepass` or `track`. GPU packing continues to reject radiation-enabled
+elements until an equivalent counter-based device implementation is provided.
 
 ## Sextupole Magnet
 

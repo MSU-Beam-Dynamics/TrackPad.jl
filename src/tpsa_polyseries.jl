@@ -251,7 +251,7 @@ end
 function polyseries_one_turn_map(lat::Lattice, beam::Beam{T};
                         r0::SVector{6,T}=SVector{6,T}(zeros(T,6)), order::Int=1) where T
     r = polyseries_variables(r0; order=order)
-    return linepass(lat, r, beam)
+    return linepass(_without_radiation(lat), r, beam)
 end
 
 """
@@ -274,6 +274,6 @@ function tpsa_map(lat::Lattice, beam::Beam;
         CTPS(co[5], 5, 6, order),
         CTPS(co[6], 6, 6, order),
     )
-    return linepass(lat, r0, beam)
+    return linepass(_without_radiation(lat), r0, beam)
 end
 

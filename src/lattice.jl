@@ -133,6 +133,53 @@ Return 1/β for the beam (used in tracking for relativistic correction).
 """
 @inline beti(beam::Beam{T}) where T = one(T) / beam.beta
 
+@inline function _radiation_context(::Type{T}, beam::Beam, seed::Integer,
+                                    turn::Int, element::Int, particle::Int) where T
+    mass = T(beam.mass)
+    charge = T(beam.charge)
+    seed_bits = seed isa Signed ? reinterpret(UInt64, Int64(seed)) : UInt64(seed)
+    return RadiationContext{T}(
+        T(beti(beam)), T(beam.beta), T(beam.gamma), T(p0c(beam)), mass, charge,
+        T(classical_radius(mass, charge)), T(QUANTUM_CONSTANT_EV_M) / mass,
+        seed_bits, turn, element, particle,
+    )
+end
+
+@inline _pass_tracking(elem::AbstractElement, r::SVector{6}, beam::Beam,
+                       seed::Integer, turn::Int, element::Int, particle::Int) =
+    pass!(elem, r, typeof(get_length(elem))(beti(beam)))
+
+for (E, f) in ((Quadrupole, :_pass_quadrupole),
+               (Sextupole, :_pass_sextupole),
+               (Octupole, :_pass_octupole),
+               (SBend, :_pass_sbend),
+               (ExactSBend, :_pass_exact_sbend),
+               (QuadrupoleSC, :_pass_quadrupole_sc),
+               (SextupoleSC, :_pass_sextupole_sc),
+               (OctupoleSC, :_pass_octupole_sc),
+               (SBendSC, :_pass_sbend_sc))
+    @eval @inline function _pass_tracking(elem::$E{T}, r::SVector{6}, beam::Beam,
+                                          seed::Integer, turn::Int,
+                                          element::Int, particle::Int) where T
+        iszero(elem.rad) && return pass!(elem, r, T(beti(beam)))
+        ctx = _radiation_context(T, beam, seed, turn, element, particle)
+        return $f(elem, r, ctx.beti, ctx)
+    end
+end
+
+
+@inline function _pass_tracking(elem::Wiggler{T}, r::SVector{6}, beam::Beam,
+                                seed::Integer, turn::Int,
+                                element::Int, particle::Int) where T
+    mode = _check_radiation_mode(elem.rad)
+    mode == 0 && return pass!(elem, r, T(beti(beam)))
+    T(beam.energy) == elem.energy && T(beam.mass) == elem.mass && T(beam.charge) == elem.charge ||
+        throw(ArgumentError(
+            "radiating Wiggler energy, mass, and charge must match the tracked Beam"))
+    ctx = _radiation_context(T, beam, seed, turn, element, particle)
+    return _pass_wiggler(elem, r, ctx.beti, ctx)
+end
+
 # =============================================================================
 # Lattice Definition
 # =============================================================================
@@ -456,12 +503,13 @@ Track a single particle through the lattice (immutable version).
 """
 function linepass(lat::Lattice, r::SVector{6,S}, beam::Beam{T};
                   time::Real=zero(T), turn::Integer=0,
-                  check_apertures::Bool=true) where {T,S}
-    β_inv = beti(beam)
+                  check_apertures::Bool=true,
+                  radiation_seed::Integer=0) where {T,S}
     ctx = TimeContext(T(time); turn=turn)
-    for elem in lat.elements
+    for (element_index, elem) in enumerate(lat.elements)
         elem_now = _resolve_for_time(elem, ctx)
-        r = pass!(elem_now, r, β_inv)
+        r = _pass_tracking(elem_now, r, beam, radiation_seed, Int(turn),
+                           element_index, 1)
         if check_lost(r)
             return r  # Return immediately if particle is lost
         end
@@ -486,9 +534,10 @@ end
 Track a single particle through the lattice using default beam (1 GeV electron).
 """
 function linepass(lat::Lattice, r::SVector{6,S}; time::Real=zero(Float64), turn::Integer=0,
-                  check_apertures::Bool=true) where S
+                  check_apertures::Bool=true, radiation_seed::Integer=0) where S
     beam = Beam(1.0e9)
-    return linepass(lat, r, beam; time=time, turn=turn, check_apertures=check_apertures)
+    return linepass(lat, r, beam; time=time, turn=turn,
+                    check_apertures=check_apertures, radiation_seed=radiation_seed)
 end
 
 """
@@ -509,17 +558,23 @@ the global coordinate limits comes back as `NaN` coordinates
 Time-varying elements are resolved once per turn at
 `(time + (n-1)*dt_turn, turn + n - 1)`.
 
+For magnets with `rad=2`, `radiation_seed` selects the reproducible quantum
+excitation realization. Samples are also keyed by turn, element, particle, and
+integration slice, so serial and threaded matrix tracking agree exactly.
+
 `linepass(lat, r, beam)` is the single-pass JuTrack-compatible spelling.
 """
 function track(lat::Lattice, r::SVector{6,S}, beam::Beam{T}=Beam(1.0e9);
                nturns::Integer=1, time::Real=zero(T), dt_turn::Real=zero(T),
-               turn::Integer=0, check_apertures::Bool=true) where {T,S}
+               turn::Integer=0, check_apertures::Bool=true,
+               radiation_seed::Integer=0) where {T,S}
     _check_nturns(lat, nturns, "track")
     t = T(time)
     dt = T(dt_turn)
     trn = Int(turn)
     for _ in 1:nturns
-        r = linepass(lat, r, beam; time=t, turn=trn, check_apertures=check_apertures)
+        r = linepass(lat, r, beam; time=t, turn=trn,
+                     check_apertures=check_apertures, radiation_seed=radiation_seed)
         if check_lost(r)
             # As in `track!`, a lost particle leaves the tracker as NaN rather
             # than as the finite, plausible-looking coordinates it happened to
@@ -563,20 +618,24 @@ Track multiple particles through a lattice (in-place, mutating version).
 This function provides JuTrack-compatible interface for multi-particle tracking.
 """
 function linepass!(coords::Matrix{T}, lat::Lattice, beam::Beam,
-                   lost_flags::AbstractVector; time::Real=zero(T), turn::Integer=0) where T
-    return _linepass_core!(coords, lat, T(beti(beam)), lost_flags; time=time, turn=turn)
+                   lost_flags::AbstractVector; time::Real=zero(T), turn::Integer=0,
+                   radiation_seed::Integer=0) where T
+    return _linepass_core!(coords, lat, beam, lost_flags; time=time, turn=turn,
+                           radiation_seed=radiation_seed)
 end
 
 # One pass of the whole bunch, shared by `linepass!` and the serial path of
-# `track!`. Takes the inverse velocity rather than the beam so that a Float32
-# coordinate matrix can be tracked with a Float64 `Beam`.
-function _linepass_core!(coords::Matrix{T}, lat::Lattice, β_inv::T,
+# `track!`. Element kernels convert beam quantities to their parameter type, so
+# a Float32 coordinate matrix can still be tracked with a Float64 `Beam`.
+function _linepass_core!(coords::Matrix{T}, lat::Lattice, beam::Beam,
                          lost_flags::AbstractVector;
-                         time::Real=zero(T), turn::Integer=0) where T
+                         time::Real=zero(T), turn::Integer=0,
+                         radiation_seed::Integer=0) where T
     nparticles = size(coords, 1)
+    β_inv = T(beti(beam))
     ctx = TimeContext(T(time); turn=turn)
 
-    for elem in lat.elements
+    for (element_index, elem) in enumerate(lat.elements)
         elem_now = _resolve_for_time(elem, ctx)
         # Collective elements need the whole bunch, not one particle at a time.
         if elem_now isa Union{LongitudinalRLCWake, LongitudinalWake}
@@ -591,8 +650,9 @@ function _linepass_core!(coords::Matrix{T}, lat::Lattice, β_inv::T,
         # the heap. Handing the element to a function that specializes on its
         # concrete type moves that to one dispatch per element and makes the
         # particle loop monomorphic and allocation-free.
-        _track_element!(coords, lost_flags, nparticles, elem_now, β_inv,
-                        rap, eap, check_aperture)
+        _track_element!(coords, lost_flags, nparticles, elem_now, beam, β_inv,
+                        rap, eap, check_aperture, radiation_seed, Int(turn),
+                        element_index)
     end
 
     return nothing
@@ -600,8 +660,9 @@ end
 
 # Specializes on the concrete element type `E`; see the call site above.
 function _track_element!(coords::Matrix{T}, lost_flags::AbstractVector,
-                         nparticles::Int, elem::E, β_inv::T,
-                         rap, eap, check_aperture::Bool) where {T,E<:AbstractElement}
+                         nparticles::Int, elem::E, beam::Beam, β_inv::T,
+                         rap, eap, check_aperture::Bool, radiation_seed::Integer,
+                         turn::Int, element_index::Int) where {T,E<:AbstractElement}
     @inbounds for i in 1:nparticles
         if !iszero(lost_flags[i])
             continue
@@ -610,7 +671,8 @@ function _track_element!(coords::Matrix{T}, lost_flags::AbstractVector,
         r = SVector{6,T}(coords[i, 1], coords[i, 2], coords[i, 3],
                          coords[i, 4], coords[i, 5], coords[i, 6])
 
-        r_new = pass!(elem, r, β_inv)
+        r_new = _pass_tracking(elem, r, beam, radiation_seed, turn,
+                               element_index, i)
 
         if check_lost(r_new)
             lost_flags[i] = true
@@ -650,6 +712,9 @@ are not supported there.
 Time-varying elements are resolved once per turn at
 `(time + (n-1)*dt_turn, turn + n - 1)`.
 
+For magnets with `rad=2`, `radiation_seed` selects the reproducible quantum
+excitation realization. Samples are independent of thread scheduling.
+
 `track!(coords, gl)` with a packed [`GPULattice`](@ref) is the CPU/GPU kernel
 form of the same call. `linepass!` is the single-pass JuTrack-compatible
 spelling, which reports losses through its `lost_flags` argument and leaves the
@@ -660,7 +725,7 @@ function track!(coords::Matrix{T}, lat::Lattice, beam::Beam=Beam(1.0e9);
                 lost::Union{Nothing,AbstractVector}=nothing,
                 threaded::Bool=false,
                 time::Real=zero(T), dt_turn::Real=zero(T),
-                turn::Integer=0) where T
+                turn::Integer=0, radiation_seed::Integer=0) where T
     _check_nturns(lat, nturns, "track!")
     n = size(coords, 1)
     size(coords, 2) == 6 ||
@@ -684,10 +749,12 @@ function track!(coords::Matrix{T}, lat::Lattice, beam::Beam=Beam(1.0e9);
                 "track!: collective elements (longitudinal wakes) need the whole " *
                 "bunch at once and are not supported with threaded=true"))
         # Implemented next to the chunking helpers in src/gpu.jl.
-        _threaded_track!(coords, lat, β_inv, flags, nturns, t, dt, trn)
+        _threaded_track!(coords, lat, beam, β_inv, flags, nturns, t, dt, trn,
+                         radiation_seed)
     else
         for _ in 1:nturns
-            _linepass_core!(coords, lat, β_inv, flags; time=t, turn=trn)
+            _linepass_core!(coords, lat, beam, flags; time=t, turn=trn,
+                            radiation_seed=radiation_seed)
             t += dt
             trn += 1
         end

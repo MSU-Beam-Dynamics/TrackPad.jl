@@ -81,6 +81,12 @@ end
         copy(coords0), Lattice([Drift(T(0.1))]), beam, 2,
     )
     @test_throws ArgumentError batch_linepass!(actual, GPULattice(ring, beam; dtype=T), -1)
+    @test_throws ArgumentError GPULattice(
+        Lattice([SBend(T(0.4), T(0.03); rad=1)]), beam; dtype=T,
+    )
+    @test_throws ArgumentError GPULattice(
+        Lattice([Quadrupole(T(0.2), T(0.7); rad=2)]), beam; dtype=T,
+    )
 end
 
 @testset "GPU parameter sweep parity" begin

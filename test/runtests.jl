@@ -17,6 +17,7 @@ end
         include_isolated(:VerifyCurvedMultipole, "verify_curved_multipole.jl")
         include_isolated(:VerifyLatticePlot, "verify_lattice_plot.jl")
         include_isolated(:VerifyDistributions, "verify_distributions.jl")
+        include_isolated(:VerifyRadiation, "verify_radiation.jl")
         include_isolated(:VerifyClosedOrbit, "verify_closed_orbit.jl")
         include_isolated(:VerifyTimeDependence, "verify_time_dependence.jl")
         include_isolated(:VerifyEnzymeCompatibility, "verify_enzyme_compat.jl")

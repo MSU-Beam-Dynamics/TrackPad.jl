@@ -11,7 +11,8 @@
              closed_orbit::Union{Nothing, AbstractVector} = nothing)
 
 Compute the Taylor transfer map of `lat` up to polynomial `order` about
-`closed_orbit` (zero orbit when `nothing`).
+`closed_orbit` (zero orbit when `nothing`). Like every optics function it
+ignores the magnets' `rad` flags and maps the radiation-free machine.
 
 ```julia
 M = tpsa_map(lat, beam; order = 2)

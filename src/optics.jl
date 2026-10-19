@@ -199,15 +199,47 @@ function _validate_refpts(refpts::AbstractVector{<:Integer}, n::Int)
     end
 end
 
+# Optics describe the conservative machine. Radiation damping makes the
+# one-turn map non-symplectic and quantum excitation makes it random, so every
+# public optics entry point runs on a copy of the lattice with each magnet's
+# `rad` flag cleared; only tracking radiates. A lattice without radiating
+# elements is returned as is.
+_radiates(elem::AbstractElement) = _radiation_mode(elem) != 0
+_radiates(elem::TimeVaryingElement) = _radiates(elem.base) || haskey(elem.updates, :rad)
+
+_without_radiation(elem::AbstractElement) = _radiates(elem) ? _with_rad_zero(elem) : elem
+
+function _with_rad_zero(elem::E) where {E<:AbstractElement}
+    vals = ntuple(i -> fieldname(E, i) === :rad ? zero(fieldtype(E, i)) : getfield(elem, i),
+                  fieldcount(E))
+    return E(vals...)
+end
+
+function _without_radiation(elem::TimeVaryingElement)
+    haskey(elem.updates, :rad) && throw(ArgumentError(
+        "optics cannot clear a time-dependent `rad`; give the base element a static `rad`"))
+    _radiates(elem.base) || return elem
+    return TimeVaryingElement(_without_radiation(elem.base), elem.updates)
+end
+
+# Clearing `rad` keeps every element's concrete type, so the lattice keeps its
+# type and the optics code calling this stays type-stable.
+function _without_radiation(lat::Lattice{E}) where {E}
+    any(_radiates, lat.elements) || return lat
+    return Lattice{E}(E[_without_radiation(e) for e in lat.elements], lat.name, lat.periodic)
+end
+
 """
     transfer_map(lat, beam; reference=zeros, h=1e-8)
 
 Finite-difference estimate of the 6x6 map through an open line or periodic
-ring, evaluated about `reference`.
+ring, evaluated about `reference`. Like every optics function it ignores the
+magnets' `rad` flags: the map is that of the radiation-free machine.
 """
 function transfer_map(lat::Lattice, beam::Beam{T};
                       reference::SVector{6,T}=zero(SVector{6,T}),
                       h::T=T(1e-8)) where T
+    lat = _without_radiation(lat)
     M = Matrix{T}(undef, 6, 6)
     for i in 1:6
         ei = _unit6(T, i)
@@ -578,6 +610,7 @@ function getchrom(lat::Lattice, beam::Beam{T};
                   wrt::Symbol=:deltap,
                   method::Symbol=:tpsa) where T
     _require_periodic(lat, "getchrom")
+    lat = _without_radiation(lat)
     dpp > zero(T) || throw(ArgumentError("dpp must be positive"))
     _check_wrt(wrt)
     _check_optics_method(method)
@@ -679,6 +712,9 @@ end
                          reg=1e-12, strict=true)
 
 Find a 6-D closed orbit using Newton iterations with finite-difference Jacobians.
+Radiation is ignored (magnets' `rad` flags are cleared), so this is the orbit of
+the conservative machine, without the synchronous-phase shift that restores the
+radiated energy; track a radiating lattice to equilibrium to find that one.
 
 Throws when the iteration does not reach `tol`; pass `strict=false` to warn and
 return the last iterate instead.
@@ -691,6 +727,7 @@ function find_closed_orbit_6d(lat::Lattice, beam::Beam{T};
                               reg::T=T(1e-12),
                               strict::Bool=true) where T
     _require_periodic(lat, "find_closed_orbit_6d")
+    lat = _without_radiation(lat)
 
     f(θ::Vector{T}) = collect(linepass(lat, SVector{6,T}(θ...), beam))
 
@@ -722,6 +759,7 @@ function find_closed_orbit_4d(lat::Lattice, beam::Beam{T};
                               strict::Bool=true,
                               wrt::Symbol=:deltap) where T
     _require_periodic(lat, "find_closed_orbit_4d")
+    lat = _without_radiation(lat)
     δE = T(_deltae_input(dp, beam.beta, wrt))
 
     function f(θ::Vector{T})
@@ -782,6 +820,8 @@ orbit: Twiss functions, dispersion, momentum compaction and slip factor,
 chromaticity, and optionally the second-order chromaticity, the radiation
 integrals and the amplitude-dependent tune shift. Every momentum derivative is
 taken about the off-momentum closed orbit, so sextupole feed-down is included.
+The optics are those of the radiation-free machine: magnets' `rad` flags are
+ignored here, as in every optics function, and act only in tracking.
 
 With `entrance` the supplied optics are propagated once through `lat` (open
 line or a single pass through a ring) from the coordinate `reference`.
@@ -878,6 +918,7 @@ function twiss(lat::Lattice, beam::Beam{T};
     _check_wrt(wrt)
     _check_optics_method(method)
     slices >= 1 || throw(ArgumentError("slices must be at least 1"))
+    lat = _without_radiation(lat)
     mth = Val(method)
     β0 = beam.beta
     δE = reference[6]

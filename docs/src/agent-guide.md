@@ -13,7 +13,8 @@ the normative [Physics and Data Conventions](@ref conventions).
 | User intent | Preferred public API | Result |
 |-------------|----------------------|--------|
 | Track one initial condition through a line or for `nturns` turns | `track(lat, r0, beam; nturns)` | `SVector{6}`, `NaN` if lost |
-| Track an `N x 6` CPU matrix, optionally on Julia threads | `track!(coords, lat, beam; nturns, lost, threaded)` | mutates matrix; lost rows become `NaN` |
+| Track an `N x 6` CPU matrix, optionally on Julia threads | `track!(coords, lat, beam; nturns, lost, threaded, radiation_seed)` | mutates matrix; lost rows become `NaN` |
+| Track synchrotron-radiation damping / excitation | set magnet `rad=1` / `rad=2`, then use `track` or `track!` | `pass!` lacks beam data; GPU radiation is rejected; optics ignore `rad` |
 | Track with JuTrack's loss convention (flags, coordinates kept) | `linepass`, `linepass!` | single pass only |
 | Generate a Gaussian with a target `4 x 4`/`6 x 6` covariance | `gaussian_distribution` | `N x 4`/`N x 6` matrix |
 | Generate from Twiss, emittance, and longitudinal responses | `matched_gaussian` | `N x 6` matrix |

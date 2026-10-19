@@ -193,6 +193,11 @@ end
     @test tpsa_vs_fd(ExactSBend(0.9, angle_val; num_int_steps=10))
     @test tpsa_vs_fd(Solenoid(0.5, 0.8))
     @test tpsa_vs_fd(Corrector(0.4, 1.5e-4, -2.2e-4))
+    # A planar wiggler (kx = 0) takes the sinc Taylor branch, whose unit must be
+    # built from the CTPS instance; the Bx harmonic exercises the other terms.
+    @test tpsa_vs_fd(Wiggler(0.4; lw=0.1, Bmax=0.3, Nsteps=8, energy=tpsa_elem_beam.energy))
+    @test tpsa_vs_fd(Wiggler(0.4; lw=0.1, Bmax=0.3, Nsteps=8, energy=tpsa_elem_beam.energy,
+                             Bx=[1, 0.5, 1.0, 1.0, 1.0, pi / 2]))
 end
 
 @testset "TPSA rejects maps it cannot represent with a clear error" begin
