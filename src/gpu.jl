@@ -1098,7 +1098,9 @@ cpu_batch_linepass!(coords::Matrix, lat::Lattice, beam::Beam = Beam(1.0e9),
 function _threaded_track!(coords::Matrix{T}, lat::Lattice, beam::Beam, β_inv::T,
                           lost::AbstractVector, nturns::Integer,
                           time::T, dt_turn::T, turn::Int,
-                          radiation_seed::Integer) where T
+                          radiation_seed::Integer,
+                          slots::Union{Nothing,Vector{Int}}=nothing,
+                          observed=nothing) where T
     n = size(coords, 1)
     nan6 = SVector{6,T}(T(NaN), T(NaN), T(NaN), T(NaN), T(NaN), T(NaN))
     t = time
@@ -1112,21 +1114,68 @@ function _threaded_track!(coords::Matrix{T}, lat::Lattice, beam::Beam, β_inv::T
     # (rather than `@threads for i in 1:n`) also leaves a single thread
     # barrier per turn.
     chunks = _particle_chunks(n, Threads.nthreads())
-    for _ in 1:nturns
+    # Observation: each chunk counts and sums its own particles, added up after
+    # the turn, so the threads share nothing while they track.
+    partial = slots === nothing ? nothing :
+              zeros(eltype(observed), 3, size(observed, 2), length(chunks))
+    for k in 1:nturns
         ctx = TimeContext(t; turn=trn)
         elements = _resolved_elements(lat, ctx)
         Threads.@threads for ci in eachindex(chunks)
-            rng = chunks[ci]
-            for (element_index, elem_now) in enumerate(elements)
-                rap, eap = _elem_apertures(elem_now)
-                _batch_track_element!(coords, lost, rng, elem_now, beam, β_inv,
-                                      rap, eap, nan6, radiation_seed, trn,
-                                      element_index)
-            end
+            sums = partial === nothing ? nothing : view(partial, :, :, ci)
+            _track_chunk!(_Chunk(coords, lost, chunks[ci], beam, β_inv, nan6,
+                                 radiation_seed, trn, slots, sums), elements)
+        end
+        if partial !== nothing
+            @views observed[:, :, k] .= dropdims(sum(partial; dims=3); dims=3)
         end
         t += dt_turn
         trn += 1
     end
+    return nothing
+end
+
+# One thread's chunk of the bunch on one turn: what every element applies to it.
+# Held in one mutable object so that an element's dynamically dispatched call
+# (`elements` is abstractly typed) passes a single reference, not a dozen values
+# to box: the boxing allocated on every element of every chunk, which the
+# threads then paid for in collections.
+mutable struct _Chunk{T,L,B<:Beam,S,O}
+    coords::Matrix{T}
+    lost::L
+    range::UnitRange{Int}
+    beam::B
+    β_inv::T
+    nan6::SVector{6,T}
+    radiation_seed::UInt64
+    turn::Int
+    element::Int
+    slots::S
+    sums::O
+end
+
+_Chunk(coords::Matrix{T}, lost, range, beam, β_inv::T, nan6, seed::Integer, turn::Int,
+       slots, sums) where T =
+    _Chunk(coords, lost, range, beam, β_inv, nan6,
+           seed isa Signed ? reinterpret(UInt64, Int64(seed)) : UInt64(seed), turn, 0, slots, sums)
+
+# A chunk through a turn's elements: one dynamic dispatch per element (the
+# element's index travels in the chunk, not boxed in the call), after which
+# applying it, its apertures and the observation after it are static.
+function _track_chunk!(chunk::_Chunk, elements)
+    for (element_index, elem_now) in enumerate(elements)
+        chunk.element = element_index
+        _chunk_element!(elem_now, chunk)
+    end
+    return nothing
+end
+
+function _chunk_element!(elem::E, chunk::_Chunk) where {E<:AbstractElement}
+    rap, eap = _elem_apertures(elem)
+    _batch_track_element!(chunk.coords, chunk.lost, chunk.range, elem, chunk.beam, chunk.β_inv,
+                          rap, eap, chunk.nan6, chunk.radiation_seed, chunk.turn, chunk.element)
+    chunk.sums === nothing ||
+        _observe!(chunk.sums, chunk.slots[chunk.element], chunk.coords, chunk.lost, chunk.range)
     return nothing
 end
 

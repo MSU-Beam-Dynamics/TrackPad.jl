@@ -144,6 +144,19 @@ for anyone who used the repository directly.
   `transfer_map`, `findm66` and friends, `find_closed_orbit_4d/6d`,
   `tpsa_map`) ignore `rad` and describe the radiation-free machine; only
   tracking radiates.
+- `track!` observes the bunch as beam position monitors do: with `observe`,
+  increasing element indices, and `observed`, a `3 x length(observe) x nturns`
+  array, it writes after each of those elements, on every turn, the number of
+  particles still alive and the sums of their `x` and `y`. Serial and threaded
+  tracking count the same particles (the threaded sums add each thread's chunk
+  first, so they agree to rounding), with one synchronisation per turn as
+  before, so turn-by-turn readings no longer need the ring cut into stretches.
+- Threaded `track!` no longer pays for dynamic dispatch on every element of
+  every thread's chunk: a chunk travels through the turn as one object (one
+  dispatch per element, nothing boxed), and the check for collective elements
+  resolves only time-varying ones. On the EIC RCS (3244 elements, radiating,
+  192 observation points) a threaded turn allocates 0.2 MB instead of 8 MB, and
+  16 particles on 8 threads take 1.2 ms a turn instead of 2.7 ms.
 - Radiation is taken once per integration step, after it, with the field and
   the path at the step's mean position, as Xsuite takes it; a step is no longer
   split around the radiation kick. A radiating magnet then costs about a

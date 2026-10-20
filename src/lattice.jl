@@ -639,7 +639,9 @@ end
 function _linepass_core!(coords::Matrix{T}, lat::Lattice, beam::Beam,
                          lost_flags::AbstractVector;
                          time::Real=zero(T), turn::Integer=0,
-                         radiation_seed::Integer=0) where T
+                         radiation_seed::Integer=0,
+                         slots::Union{Nothing,Vector{Int}}=nothing,
+                         observed=nothing) where T
     nparticles = size(coords, 1)
     β_inv = T(beti(beam))
     ctx = TimeContext(T(time); turn=turn)
@@ -649,21 +651,67 @@ function _linepass_core!(coords::Matrix{T}, lat::Lattice, beam::Beam,
         # Collective elements need the whole bunch, not one particle at a time.
         if elem_now isa Union{LongitudinalRLCWake, LongitudinalWake}
             _apply_longitudinal_wake!(coords, lost_flags, nparticles, elem_now)
-            continue
+        else
+            rap, eap = _elem_apertures(elem_now)
+            check_aperture = _apertures_active(rap, eap)
+            # Function barrier: `elem_now` comes from a `Vector{AbstractElement}`,
+            # so calling `pass!` on it directly inside the particle loop costs one
+            # dynamic dispatch *per particle* and boxes every returned SVector on
+            # the heap. Handing the element to a function that specializes on its
+            # concrete type moves that to one dispatch per element and makes the
+            # particle loop monomorphic and allocation-free.
+            _track_element!(coords, lost_flags, nparticles, elem_now, beam, β_inv,
+                            rap, eap, check_aperture, radiation_seed, Int(turn),
+                            element_index)
         end
-        rap, eap = _elem_apertures(elem_now)
-        check_aperture = _apertures_active(rap, eap)
-        # Function barrier: `elem_now` comes from a `Vector{AbstractElement}`,
-        # so calling `pass!` on it directly inside the particle loop costs one
-        # dynamic dispatch *per particle* and boxes every returned SVector on
-        # the heap. Handing the element to a function that specializes on its
-        # concrete type moves that to one dispatch per element and makes the
-        # particle loop monomorphic and allocation-free.
-        _track_element!(coords, lost_flags, nparticles, elem_now, beam, β_inv,
-                        rap, eap, check_aperture, radiation_seed, Int(turn),
-                        element_index)
+        slots === nothing ||
+            _observe!(observed, slots[element_index], coords, lost_flags, 1:nparticles)
     end
 
+    return nothing
+end
+
+# Where `track!` observes the bunch: for every element, the column of
+# `observed` it fills after it (0: none). `nothing` when nothing is observed.
+function _observation_slots(lat::Lattice, observe::AbstractVector{<:Integer},
+                            observed, nturns::Integer)
+    isempty(observe) && observed === nothing && return nothing
+    observed === nothing && throw(ArgumentError(
+        "track!: `observe` needs `observed`, a 3 x length(observe) x nturns array"))
+    size(observed) == (3, length(observe), nturns) || throw(ArgumentError(
+        "track!: `observed` must be 3 x $(length(observe)) x $nturns, got $(size(observed))"))
+    nelements = length(lat.elements)
+    slots = zeros(Int, nelements)
+    previous = 0
+    for (k, e) in enumerate(observe)
+        previous < e <= nelements || throw(ArgumentError(
+            "track!: `observe` holds increasing element indices in 1:$nelements, got $e after $previous"))
+        slots[e] = k
+        previous = e
+    end
+    return slots
+end
+
+# The bunch seen at observation `slot` (0: not observed): the particles still
+# alive among `range`, and the sums of their x and y, into column `slot` of
+# `sums` (3 x observations).
+@inline function _observe!(sums, slot::Int, coords::Matrix{T}, lost::AbstractVector,
+                           range::UnitRange{Int}) where T
+    iszero(slot) && return nothing
+    count = 0
+    sx = zero(T)
+    sy = zero(T)
+    @inbounds for i in range
+        iszero(lost[i]) || continue
+        count += 1
+        sx += coords[i, 1]
+        sy += coords[i, 3]
+    end
+    @inbounds begin
+        sums[1, slot] = count
+        sums[2, slot] = sx
+        sums[3, slot] = sy
+    end
     return nothing
 end
 
@@ -724,6 +772,14 @@ Time-varying elements are resolved once per turn at
 For magnets with `rad=2`, `radiation_seed` selects the reproducible quantum
 excitation realization. Samples are independent of thread scheduling.
 
+`observe`, increasing element indices, watches the bunch as beam position
+monitors do: after each of those elements, on every turn, `observed[1, k, n]`
+receives the number of particles still alive after `observe[k]` on turn `n` of
+the call, and `observed[2, k, n]` and `observed[3, k, n]` the sums of their `x`
+and `y` (`observed` is `3 x length(observe) x nturns`, written over). Serial
+and threaded tracking count the same particles; the threaded sums add up each
+thread's chunk first, so they agree to rounding.
+
 `track!(coords, gl)` with a packed [`GPULattice`](@ref) is the CPU/GPU kernel
 form of the same call. `linepass!` is the single-pass JuTrack-compatible
 spelling, which reports losses through its `lost_flags` argument and leaves the
@@ -734,8 +790,11 @@ function track!(coords::Matrix{T}, lat::Lattice, beam::Beam=Beam(1.0e9);
                 lost::Union{Nothing,AbstractVector}=nothing,
                 threaded::Bool=false,
                 time::Real=zero(T), dt_turn::Real=zero(T),
-                turn::Integer=0, radiation_seed::Integer=0) where T
+                turn::Integer=0, radiation_seed::Integer=0,
+                observe::AbstractVector{<:Integer}=Int[],
+                observed::Union{Nothing,AbstractArray{<:Real,3}}=nothing) where T
     _check_nturns(lat, nturns, "track!")
+    slots = _observation_slots(lat, observe, observed, nturns)
     n = size(coords, 1)
     size(coords, 2) == 6 ||
         throw(ArgumentError("coords must be an N x 6 matrix, got $(size(coords))"))
@@ -752,18 +811,18 @@ function track!(coords::Matrix{T}, lat::Lattice, beam::Beam=Beam(1.0e9);
     trn = Int(turn)
 
     if threaded
-        any(e -> _resolve_for_time(e, TimeContext(t; turn=trn)) isa
-                 Union{LongitudinalRLCWake, LongitudinalWake}, lat.elements) &&
+        any(e -> _is_collective(e, t, trn), lat.elements) &&
             throw(ArgumentError(
                 "track!: collective elements (longitudinal wakes) need the whole " *
                 "bunch at once and are not supported with threaded=true"))
         # Implemented next to the chunking helpers in src/gpu.jl.
         _threaded_track!(coords, lat, beam, β_inv, flags, nturns, t, dt, trn,
-                         radiation_seed)
+                         radiation_seed, slots, observed)
     else
-        for _ in 1:nturns
+        for k in 1:nturns
             _linepass_core!(coords, lat, beam, flags; time=t, turn=trn,
-                            radiation_seed=radiation_seed)
+                            radiation_seed=radiation_seed, slots=slots,
+                            observed=slots === nothing ? nothing : view(observed, :, :, k))
             t += dt
             trn += 1
         end
@@ -773,6 +832,15 @@ function track!(coords::Matrix{T}, lat::Lattice, beam::Beam=Beam(1.0e9);
     bitflags && copyto!(lost, flags)
     return coords
 end
+
+# Whether an element needs the whole bunch at once: a longitudinal wake, or a
+# time-varying element that is one now. Only time-varying elements are resolved:
+# resolving every element was a dynamic, allocating call per element and call,
+# paid on every turn by a caller that tracks one turn at a time.
+_is_collective(e::Union{LongitudinalRLCWake,LongitudinalWake}, t, turn) = true
+_is_collective(e::TimeVaryingElement, t, turn) =
+    _resolve_for_time(e, TimeContext(t; turn=turn)) isa Union{LongitudinalRLCWake,LongitudinalWake}
+_is_collective(e::AbstractElement, t, turn) = false
 
 # Lost particles leave the tracker as NaN, whatever they were when they died.
 function _write_lost!(coords::Matrix{T}, flags::AbstractVector) where T
