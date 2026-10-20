@@ -144,6 +144,13 @@ for anyone who used the repository directly.
   `transfer_map`, `findm66` and friends, `find_closed_orbit_4d/6d`,
   `tpsa_map`) ignore `rad` and describe the radiation-free machine; only
   tracking radiates.
+- Radiation is taken once per integration step, after it, with the field and
+  the path at the step's mean position, as Xsuite takes it; a step is no longer
+  split around the radiation kick. A radiating magnet then costs about a
+  quarter more than a conservative one instead of three times as much, and the
+  damping partition and quantum equilibrium tests pass unchanged. `LBend`
+  takes `rad` as well: its closed-form body is one step, so a thick
+  quadrupole (`LBend(L, 0.0; K=k1)`) radiates without integration steps.
 - `Wiggler` takes `mass` and `charge` (electron defaults) and normalises its
   map to the reference particle — kinematics through `E/m`, the wiggler
   parameter through `|q|·Bmax·lw/m`, radiation through the particle's

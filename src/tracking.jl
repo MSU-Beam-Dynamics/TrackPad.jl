@@ -188,18 +188,20 @@ end
 Apply radiation in a magnetic field normalized to the reference rigidity.
 `bx` and `by` are `Bx/(B rho)` and `By/(B rho)` in 1/m, `irho` is the
 reference-frame curvature, and `ds` is a positive reference-path increment.
+The path's direction and length are those at `at` (by default `r`): the mean
+of a slice when the radiation is taken after it (`_radiate_slice`).
 """
 @inline function _radiation_kick(r::SVector{6,S}, bx, by, irho, ds,
                                  ctx::RadiationContext{T}, mode::Int,
-                                 slice::Int) where {S<:Real,T<:Real}
+                                 slice::Int, at::SVector{6}=r) where {S<:Real,T<:Real}
     iszero(ds) && return r
     pnorm = _momentum_norm(r[6], ctx.beti)
-    pz2 = pnorm^2 - r[2]^2 - r[4]^2
+    pz2 = pnorm^2 - at[2]^2 - at[4]^2
     pz2 <= zero(pz2) && return _lost_coords(r, T)
     pz = sqrt(pz2)
-    xp = r[2] / pz
-    yp = r[4] / pz
-    oh = one(T) + irho * r[1]
+    xp = at[2] / pz
+    yp = at[4] / pz
+    oh = one(T) + irho * at[1]
     # `(xp, yp, 1)` is parallel to the physical momentum.  The curvilinear
     # scale factor belongs in dl/ds, not in that direction vector.
     dir2 = one(T) + xp^2 + yp^2
@@ -234,7 +236,20 @@ reference-frame curvature, and `ds` is a positive reference-path increment.
 end
 
 @inline _radiation_kick(r::SVector{6}, bx, by, irho, ds,
-                        ::RadiationContext, mode::Int, slice::Int) = r
+                        ::RadiationContext, mode::Int, slice::Int, at::SVector{6}=r) = r
+
+"""
+Radiation over a slice of length `ds` just integrated from `r0` to `r`, as
+Xsuite takes it: the field and the path at the slice's mean, the energy taken
+after it. One evaluation per integration step, which is not split for it.
+"""
+@inline function _radiate_slice(r::SVector{6}, r0::SVector{6}, polynom_a, polynom_b,
+                                irho, max_order::Int, ds, ctx::RadiationContext,
+                                mode::Int, slice::Int)
+    mid = (r0 + r) / 2
+    bx, by = _normalized_magnetic_field(mid, polynom_a, polynom_b, irho, max_order)
+    return _radiation_kick(r, bx, by, irho, ds, ctx, mode, slice, mid)
+end
 
 """
 Return the reference momentum-energy product `P0*c = β0 E0` from the total
@@ -808,23 +823,17 @@ end
                                             mode::Int) where {T<:Real,N,S<:Real}
     num_steps > 0 || throw(ArgumentError("radiating thick magnets require num_int_steps > 0"))
     SL = L / num_steps
-    half = SL / 2
     @inbounds for slice in 1:num_steps
+        r0 = r
         if iszero(irho)
-            r = symplectic4_pass(r, half, polynom_a, polynom_b, max_order, 1, ctx.beti)
+            r = symplectic4_pass(r, SL, polynom_a, polynom_b, max_order, 1, ctx.beti)
         else
-            r = symplectic4_bend_pass(r, half, polynom_a, polynom_b, irho,
+            r = symplectic4_bend_pass(r, SL, polynom_a, polynom_b, irho,
                                       max_order, 1, ctx.beti)
         end
-        bx, by = _normalized_magnetic_field(r, polynom_a, polynom_b, irho, max_order)
-        r = _radiation_kick(r, bx, by, irho, SL, ctx, mode, slice)
         check_lost(r) && return r
-        if iszero(irho)
-            r = symplectic4_pass(r, half, polynom_a, polynom_b, max_order, 1, ctx.beti)
-        else
-            r = symplectic4_bend_pass(r, half, polynom_a, polynom_b, irho,
-                                      max_order, 1, ctx.beti)
-        end
+        r = _radiate_slice(r, r0, polynom_a, polynom_b, irho, max_order, SL, ctx, mode, slice)
+        check_lost(r) && return r
     end
     return r
 end
@@ -1647,22 +1656,17 @@ function _pass_exact_sbend(elem::ExactSBend{T,N}, r::SVector{6,S}, beti::T,
         nsteps = max(1, elem.num_int_steps)
         SL = elem.L / nsteps
         for slice in 1:nsteps
+            r0 = r
             if elem.num_int_steps == 0
-                r = _exact_kernel(exact_bend_body, r, irho, SL / 2, beti)
+                r = _exact_kernel(exact_bend_body, r, irho, SL, beti)
             else
-                r = _exact_bend_integrator_step(r, SL / 2, irho, polynom_a,
+                r = _exact_bend_integrator_step(r, SL, irho, polynom_a,
                                                 polynom_b, elem.max_order, beti)
             end
-            bx, by = _normalized_magnetic_field(r, polynom_a, polynom_b,
-                                                irho, elem.max_order)
-            r = _radiation_kick(r, bx, by, irho, SL, radctx, mode, slice)
             check_lost(r) && return r
-            if elem.num_int_steps == 0
-                r = _exact_kernel(exact_bend_body, r, irho, SL / 2, beti)
-            else
-                r = _exact_bend_integrator_step(r, SL / 2, irho, polynom_a,
-                                                polynom_b, elem.max_order, beti)
-            end
+            r = _radiate_slice(r, r0, polynom_a, polynom_b, irho, elem.max_order,
+                               SL, radctx, mode, slice)
+            check_lost(r) && return r
         end
     end
 
@@ -1905,7 +1909,8 @@ end
     return SVector(x_new, px_new, y_new, py_new, z_new, r[6])
 end
 
-function pass!(elem::LBend{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
+function pass!(elem::LBend{T,N}, r::SVector{6,S}, beti::T=one(T),
+               ctx::Union{Nothing,RadiationContext}=nothing, mode::Int=0) where {T,N,S}
     r = apply_misalignment(r, elem.t1)
     if !iszero(elem.r1)
         r = elem.r1 * r
@@ -1916,7 +1921,14 @@ function pass!(elem::LBend{T,N}, r::SVector{6,S}, beti::T=one(T)) where {T,N,S}
     end
     irho = elem.angle / elem.L
     r = edge_fringe_entrance(r, irho, elem.e1, elem.fint1, elem.full_gap, 1)
+    r0 = r
     r = _lbend_body(r, elem.L, elem.K, elem.angle, elem.by_error, beti)
+    if ctx !== nothing && !check_lost(r)
+        # The closed-form body is one slice: its radiation, as Xsuite takes a
+        # thick quadrupole's, at its mean (the gradient and the field error).
+        pb = SVector{4,T}(irho * elem.by_error, elem.K, zero(T), zero(T))
+        r = _radiate_slice(r, r0, zero(SVector{4,T}), pb, irho, 1, elem.L, ctx, mode, 1)
+    end
     r = edge_fringe_exit(r, irho, elem.e2, elem.fint2, elem.full_gap, 1)
 
     if !iszero(elem.r2)

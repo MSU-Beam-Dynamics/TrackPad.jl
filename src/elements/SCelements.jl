@@ -356,6 +356,7 @@ struct LBend{T, N} <: AbstractMagnet
     fint1::T
     fint2::T
     full_gap::T
+    rad::Int
     t1::SVector{6, T}
     t2::SVector{6, T}
     r1::SMatrix{6, 6, T, 36}
@@ -367,11 +368,12 @@ end
 function LBend(L, angle, e1 = 0.0, e2 = 0.0;
                name::Union{Symbol, String} = :LBEND,
                K = 0.0, by_error = 0.0, fint1 = 0.0, fint2 = 0.0, full_gap = 0.0,
+               rad::Int = 0,
                t1 = nothing, t2 = nothing,
                r1 = nothing, r2 = nothing,
                r_apertures = nothing, e_apertures = nothing)
     T = _promote_element_type(L, angle, e1, e2, K, by_error, fint1, fint2, full_gap, t1, t2, r1, r2, r_apertures, e_apertures)
-    LBend{T, Symbol}(Symbol(name), T(L), T(angle), T(e1), T(e2), T(K), T(by_error), T(fint1), T(fint2), T(full_gap),
+    LBend{T, Symbol}(Symbol(name), T(L), T(angle), T(e1), T(e2), T(K), T(by_error), T(fint1), T(fint2), T(full_gap), rad,
         SVector{6, T}(_default_vec(t1, T, Val(6))),
         SVector{6, T}(_default_vec(t2, T, Val(6))),
         SMatrix{6, 6, T}(_default_mat(r1, T, Val(6))),
@@ -384,7 +386,7 @@ function Adapt.adapt_structure(to, x::LBend)
     LBend(adapt(to, x.L), adapt(to, x.angle), adapt(to, x.e1), adapt(to, x.e2);
           name=x.name, K=adapt(to, x.K), by_error=adapt(to, x.by_error),
           fint1=adapt(to, x.fint1), fint2=adapt(to, x.fint2), full_gap=adapt(to, x.full_gap),
-          t1=adapt(to, x.t1), t2=adapt(to, x.t2), r1=adapt(to, x.r1), r2=adapt(to, x.r2),
+          rad=x.rad, t1=adapt(to, x.t1), t2=adapt(to, x.t2), r1=adapt(to, x.r1), r2=adapt(to, x.r2),
           r_apertures=adapt(to, x.r_apertures), e_apertures=adapt(to, x.e_apertures))
 end
 

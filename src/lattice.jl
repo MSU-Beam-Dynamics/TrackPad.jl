@@ -168,6 +168,15 @@ for (E, f) in ((Quadrupole, :_pass_quadrupole),
 end
 
 
+@inline function _pass_tracking(elem::LBend{T}, r::SVector{6}, beam::Beam,
+                                seed::Integer, turn::Int,
+                                element::Int, particle::Int) where T
+    mode = _check_radiation_mode(elem.rad)
+    mode == 0 && return pass!(elem, r, T(beti(beam)))
+    ctx = _radiation_context(T, beam, seed, turn, element, particle)
+    return pass!(elem, r, ctx.beti, ctx, mode)
+end
+
 @inline function _pass_tracking(elem::Wiggler{T}, r::SVector{6}, beam::Beam,
                                 seed::Integer, turn::Int,
                                 element::Int, particle::Int) where T

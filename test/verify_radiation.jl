@@ -93,6 +93,29 @@ end
     @test out[6] < r0[6]
 end
 
+@testset "LBend radiates over its closed-form body" begin
+    beam = Beam(3.0e9)
+    L, h = 1.0, 0.1
+    r0 = @SVector zeros(6)
+    expected = (2 / 3) * classical_radius(beam) * beam.beta^2 * beam.gamma^3 * h^2 * L
+    # One slice: the energy taken once, at the body's mean, as Xsuite takes a thick magnet's.
+    @test linepass(Lattice(AbstractElement[LBend(L, h * L; rad=1)]), r0, beam)[6] ≈ -expected rtol=1e-3
+    @test linepass(Lattice(AbstractElement[LBend(L, h * L)]), r0, beam)[6] == 0
+    coords = zeros(8192, 6)
+    track!(coords, Lattice(AbstractElement[LBend(L, h * L; rad=2)]), beam; radiation_seed=0x1357)
+    @test var(@view coords[:, 6]) ≈ bend_variance(beam, h, L) rtol=0.05
+
+    # A thick quadrupole (angle 0) radiates off the axis only, as its many-step
+    # integration does to within the one slice's approximation.
+    k1 = 0.5
+    off = SVector(1e-3, 0.0, 0.0, 0.0, 0.0, 0.0)
+    quad = Lattice(AbstractElement[LBend(L, 0.0; K=k1, rad=1)])
+    fine = Lattice(AbstractElement[Quadrupole(L, k1; num_int_steps=64, rad=1)])
+    @test linepass(quad, r0, beam)[6] == 0
+    @test linepass(quad, off, beam)[6] < 0
+    @test linepass(quad, off, beam)[6] ≈ linepass(fine, off, beam)[6] rtol=0.1
+end
+
 @testset "Wiggler radiation uses the tracked beam" begin
     beam = Beam(3.0e9)
     r0 = @SVector zeros(6)
